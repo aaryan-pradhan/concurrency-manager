@@ -1,0 +1,36 @@
+// Test Case 2: Lock conflicts and phase transitions
+// This test demonstrates conflict detection and phase transitions
+
+// Start transactions
+START T1
+START T2
+START T3
+
+// T1 gets exclusive lock on A
+W1(A)
+
+// T2 tries to read A - should fail or block
+R2(A)
+
+// T2 reads B instead
+R2(B)
+
+// T2 writes to B
+W2(B)
+
+// T1 tries to read B - should fail or block
+R1(B)
+
+// T1 releases A - enters shrinking phase
+RELEASE T1(A)
+
+// T1 tries to acquire C - should fail (shrinking phase)
+R1(C)
+
+// T3 can now acquire A
+R3(A)
+
+// Commit transactions
+C1
+C2
+C3

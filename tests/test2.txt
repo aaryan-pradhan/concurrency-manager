@@ -1,0 +1,23 @@
+// Tests 2PL phase transitions (growing to shrinking)
+// This test demonstrates that once a transaction releases a lock,
+// it enters the shrinking phase and cannot acquire new locks
+
+// Start transaction
+START T1
+
+// Growing phase - acquiring locks
+R1(A)   // T1 reads item A (gets shared lock)
+R1(B)   // T1 reads item B (gets shared lock)
+W1(C)   // T1 writes to item C (gets exclusive lock)
+
+// Release a lock - this moves T1 to shrinking phase
+RELEASE T1(A)   // T1 releases lock on A, enters shrinking phase
+
+// Try to acquire a new lock in shrinking phase - should fail
+R1(D)   // T1 tries to read D - should fail because T1 is in shrinking phase
+
+// Release another lock
+RELEASE T1(B)   // T1 releases lock on B, remains in shrinking phase
+
+// Complete the transaction
+C1      // T1 commits

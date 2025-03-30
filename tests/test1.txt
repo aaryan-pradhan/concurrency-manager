@@ -1,0 +1,25 @@
+// Basic 2PL test with potential lock conflicts
+// This schedule tests shared lock acquisition, upgrade to exclusive locks, 
+// and the transaction phase transitions (growing to shrinking)
+
+// Start transactions
+START T1
+START T2
+
+// Both transactions acquiring shared locks
+R1(E)   // T1 reads item E (gets shared lock on E)
+R2(G)   // T2 reads item G (gets shared lock on G)
+R1(F)   // T1 reads item F (gets shared lock on F)
+R2(F)   // T2 reads item F (gets shared lock on F, shared with T1)
+R1(G)   // T1 reads item G (gets shared lock on G, shared with T2)
+R2(E)   // T2 reads item E (gets shared lock on E, shared with T1)
+
+// Now transactions try to upgrade to exclusive locks
+// This may cause conflicts since both have shared locks on each other's items
+W1(F)   // T1 tries to upgrade to exclusive lock on F (T2 holds shared lock)
+W2(E)   // T2 tries to upgrade to exclusive lock on E (T1 holds shared lock)
+W1(G)   // T1 tries to upgrade to exclusive lock on G (T2 holds shared lock)
+
+// Complete the transactions
+C2      // T2 commits - all its locks are released
+C1      // T1 commits - all its locks are released
