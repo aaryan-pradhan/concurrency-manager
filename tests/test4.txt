@@ -1,0 +1,21 @@
+// Deadlock Test Case
+// This creates a classic deadlock scenario where:
+// - T1 holds a lock on A and requests a lock on B
+// - T2 holds a lock on B and requests a lock on A
+
+// Start transactions
+START T1
+START T2
+
+// Each transaction acquires a lock on one resource
+R1(A)   // T1 reads item A (gets shared lock on A)
+R2(B)   // T2 reads item B (gets shared lock on B)
+
+// Now each transaction attempts to write to the resource held by the other
+// This will create a deadlock since both transactions will be waiting for each other
+W1(B)   // T1 tries to get exclusive lock on B - will wait since T2 holds it
+W2(A)   // T2 tries to get exclusive lock on A - will wait since T1 holds it
+
+// These may not execute if deadlock detection works and aborts one of the transactions
+C1      // Attempt to commit T1
+C2      // Attempt to commit T2
