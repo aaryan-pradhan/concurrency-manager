@@ -8,6 +8,7 @@
 #include <memory>
 #include "logger.h"
 #include "transaction.h"
+#include "resource_manager.h"  // Add this include
 
 /**
  * @enum LockType
@@ -72,6 +73,9 @@ private:
     // Timeout for waiting transactions
     const std::chrono::milliseconds lockTimeout{5000}; // 5 second
 
+    // Resource allocation graph for deadlock detection
+    ResourceAllocationGraph &rag;
+
     /**
      * @brief Checks if a lock request is compatible with currently granted locks
      * @param resourceId ID of the resource
@@ -91,8 +95,9 @@ public:
     /**
      * @brief Constructs a new LockManager
      * @param logger Reference to the logger for recording operations
+     * @param rag Reference to the resource allocation graph
      */
-    explicit LockManager(Logger &logger);
+    explicit LockManager(Logger &logger, ResourceAllocationGraph &rag);
 
     /**
      * @brief Attempts to acquire a lock on behalf of a transaction
@@ -156,6 +161,19 @@ public:
      * @return true if upgrade was successful, false otherwise
      */
     bool upgradeLock(int txnId, int resourceId, bool wait = true);
+
+    /**
+     * @brief Check for a deadlock in the system
+     * @param deadlockCycle Output parameter that will contain the cycle if a deadlock is found
+     * @return true if a deadlock is found, false otherwise
+     */
+    bool detectDeadlock(std::vector<int> &deadlockCycle);
+
+    /**
+     * @brief Get a string representation of the resource allocation graph
+     * @return String representation of the graph
+     */
+    std::string getResourceAllocationGraph() const;
 
     bool holdsLockInternal(int txnId, int resourceId) const;
     LockType *getLockTypeInternal(int txnId, int resourceId) const;

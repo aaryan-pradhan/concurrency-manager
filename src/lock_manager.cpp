@@ -2,9 +2,9 @@
 #include <algorithm>
 #include <thread>
 
-LockManager::LockManager(Logger& loggerRef)
-    : logger(loggerRef) {
-    logger.info("Lock Manager initialized with condition variable support");
+LockManager::LockManager(Logger& loggerRef, ResourceAllocationGraph& ragRef)
+    : logger(loggerRef), rag(ragRef) {
+    logger.info("Lock Manager initialized with RAG and condition variable support");
 }
 
 // Helper method to notify waiting transactions
@@ -13,7 +13,7 @@ void LockManager::notifyWaitingTransactions() {
     cv.notify_all();
 }
 
-// Helper method to wait for a lock
+// Modify waitForLock to update RAG
 bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
     // Add to waiting set
     waitingTransactions.insert(txnId);
@@ -49,6 +49,9 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
     waitingTransactions.erase(txnId);
     
     if (!success) {
+        // Remove request edge from RAG
+        rag.removeRequestEdge(txnId, resourceId);
+        
         logger.warning("T" + std::to_string(txnId) + " timed out waiting for lock on R" + 
                      std::to_string(resourceId));
         
@@ -81,6 +84,11 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
         
         if (it != requests.end() && isCompatible(resourceId, *it)) {
             it->granted = true;
+            
+            // Update RAG: request edge becomes assignment edge
+            rag.addAssignmentEdge(resourceId, txnId);
+            rag.removeRequestEdge(txnId, resourceId);
+            
             logger.logLockAcquired(txnId, resourceId, lockTypeToString(it->type));
             return true;
         }
@@ -258,6 +266,7 @@ std::vector<int> LockManager::getLockHolders(int resourceId) const {
     return getLockHoldersInternal(resourceId);
 }
 
+// Modify acquireLock to update RAG
 bool LockManager::acquireLock(int txnId, int resourceId, LockType lockType, bool wait) {
     logger.logLockAcquireAttempt(txnId, resourceId, lockTypeToString(lockType));
     
@@ -293,6 +302,9 @@ bool LockManager::acquireLock(int txnId, int resourceId, LockType lockType, bool
         newRequest.granted = true;
         lockTable[resourceId].push_back(newRequest);
         
+        // Add assignment edge to RAG
+        rag.addAssignmentEdge(resourceId, txnId);
+        
         logger.logLockAcquired(txnId, resourceId, lockTypeToString(lockType));
         return true;
     } else if (!wait) {
@@ -301,14 +313,17 @@ bool LockManager::acquireLock(int txnId, int resourceId, LockType lockType, bool
                       std::to_string(resourceId));
         return false;
     } else {
-        // Add request to queue and wait
+        // Add request edge to RAG
+        rag.addRequestEdge(txnId, resourceId);
+        
+        // Add the request to the queue
+        lockTable[resourceId].push_back(newRequest);
+        
+        // Get lock holders for logging
         auto holders = getLockHoldersInternal(resourceId);
         if (!holders.empty()) {
             logger.logLockWaiting(txnId, resourceId, holders[0]);
         }
-        
-        // Add the request to the queue
-        lockTable[resourceId].push_back(newRequest);
         
         // Release the lock before waiting to avoid deadlock
         lock.unlock();
@@ -318,6 +333,7 @@ bool LockManager::acquireLock(int txnId, int resourceId, LockType lockType, bool
     }
 }
 
+// Modify releaseLock to update RAG
 bool LockManager::releaseLock(int txnId, int resourceId) {
     std::lock_guard<std::mutex> lock(mtx);
     
@@ -345,6 +361,9 @@ bool LockManager::releaseLock(int txnId, int resourceId) {
     // Remove the lock
     requests.erase(it);
     
+    // Remove assignment edge from RAG
+    rag.removeAssignmentEdge(resourceId, txnId);
+    
     // If no more lock requests for this resource, remove the resource entry
     if (requests.empty()) {
         lockTable.erase(resourceId);
@@ -366,6 +385,7 @@ bool LockManager::releaseLock(int txnId, int resourceId) {
     return true;
 }
 
+// Modify releaseAllLocks to update RAG
 void LockManager::releaseAllLocks(int txnId) {
     std::lock_guard<std::mutex> lock(mtx);
     
@@ -396,6 +416,9 @@ void LockManager::releaseAllLocks(int txnId) {
             requests.erase(it);
             logger.logLockReleased(txnId, resourceId);
             
+            // Remove assignment edge from RAG
+            rag.removeAssignmentEdge(resourceId, txnId);
+            
             // If no more lock requests for this resource, remove the resource entry
             if (requests.empty()) {
                 lockTable.erase(resourceId);
@@ -410,6 +433,9 @@ void LockManager::releaseAllLocks(int txnId) {
             }
         }
     }
+    
+    // Clear transaction from RAG
+    rag.clearTransaction(txnId);
     
     if (!resourcesToRelease.empty()) {
         logger.info("Released all " + std::to_string(resourcesToRelease.size()) + 
@@ -443,4 +469,12 @@ std::vector<int> LockManager::getWaitingTransactions(int resourceId) const {
 bool LockManager::upgradeLock(int txnId, int resourceId, bool wait) {
     std::lock_guard<std::mutex> lock(mtx);
     return upgradeLockInternal(txnId, resourceId, wait);
+}
+
+bool LockManager::detectDeadlock(std::vector<int>& deadlockCycle) {
+    return rag.detectDeadlock(deadlockCycle);
+}
+
+std::string LockManager::getResourceAllocationGraph() const {
+    return rag.toString();
 }

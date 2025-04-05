@@ -1,12 +1,14 @@
 #include "../include/concurrency_manager.h"
 #include <sstream>
 #include <algorithm>
+#include <limits>
 
 ConcurrencyManager::ConcurrencyManager(const std::string& logFilePath)
     : logger(logFilePath, true),
-      lockManager(logger), 
+      rag(logger),
+      lockManager(logger, rag), 
       nextTxnId(1) {
-    logger.info("Concurrency Manager initialized with Two-Phase Locking protocol");
+    logger.info("Concurrency Manager initialized with Two-Phase Locking protocol and RAG");
 }
 
 ConcurrencyManager::~ConcurrencyManager() {
@@ -253,4 +255,55 @@ std::string ConcurrencyManager::getSystemState() const {
     }
     
     return ss.str();
+}
+
+// Implement deadlock checking
+bool ConcurrencyManager::checkForDeadlocks() {
+    std::vector<int> deadlockCycle;
+    
+    // Log deadlock detection start
+    logger.logDeadlockDetectionStart();
+    
+    // Check for deadlocks using the RAG
+    bool foundDeadlock = lockManager.detectDeadlock(deadlockCycle);
+    
+    if (foundDeadlock) {
+        // Log deadlock detection
+        logger.logDeadlockDetected(deadlockCycle);
+        
+        // Choose a victim (youngest transaction in the cycle)
+        int victimId = -1;
+        long youngestAge = std::numeric_limits<long>::max();
+        
+        std::lock_guard<std::mutex> lock(mtx);
+        for (int id : deadlockCycle) {
+            // Skip resource IDs (they're negative in our convention)
+            if (id < 0) continue;
+            
+            Transaction* txn = getTransaction(id);
+            if (txn && txn->getAgeMillis() < youngestAge) {
+                youngestAge = txn->getAgeMillis();
+                victimId = id;
+            }
+        }
+        
+        // Abort the victim transaction
+        if (victimId != -1) {
+            logger.logDeadlockResolution(victimId);
+            
+            // Release lock before calling abortTransaction to avoid deadlock
+            lock.~lock_guard();
+            abortTransaction(victimId, "Deadlock resolution");
+        }
+        
+        logger.logDeadlockDetectionComplete(true);
+        return true;
+    }
+    
+    logger.logDeadlockDetectionComplete(false);
+    return false;
+}
+
+std::string ConcurrencyManager::getResourceAllocationGraph() const {
+    return lockManager.getResourceAllocationGraph();
 }

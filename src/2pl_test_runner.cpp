@@ -65,7 +65,7 @@ std::mutex outputMutex;
 // Global atomic counter for tracking active threads
 std::atomic<int> activeThreads(0);
 
-// Run a transaction in its own thread
+// Modify the runTransaction function to display RAG after each operation
 void runTransaction(int txnNum, const std::vector<Operation>& operations, ConcurrencyManager& cm, 
                    std::map<int, int>& txnIdMap) {
     activeThreads++;
@@ -74,7 +74,7 @@ void runTransaction(int txnNum, const std::vector<Operation>& operations, Concur
     
     try {
         for (const auto& op : operations) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10 + rand() % 50)); // Add some randomness
+            std::this_thread::sleep_for(std::chrono::milliseconds(10 + rand() % 50));
             
             // Handle START operation
             if (op.type == Operation::START) {
@@ -82,6 +82,9 @@ void runTransaction(int txnNum, const std::vector<Operation>& operations, Concur
                 txnIdMap[txnNum] = txnId;
                 SYNCHRONIZED_COUT("Thread " << std::this_thread::get_id() << ": Started T" 
                               << txnNum << " (ID: " << txnId << ") [Line " << op.lineNumber << "]");
+                
+                // Print RAG after operation
+                SYNCHRONIZED_COUT(cm.getResourceAllocationGraph());
                 continue;
             }
             
@@ -162,6 +165,14 @@ void runTransaction(int txnNum, const std::vector<Operation>& operations, Concur
                               << (success ? "SUCCESS" : "FAILED")
                               << " - Now in " << stateStr << " phase"
                               << " [Line " << op.lineNumber << "]");
+            }
+            
+            // Print RAG after operation
+            SYNCHRONIZED_COUT(cm.getResourceAllocationGraph());
+            
+            // Periodically check for deadlocks (e.g., 10% chance after each operation)
+            if (rand() % 10 == 0) {
+                cm.checkForDeadlocks();
             }
         }
     } catch (const std::exception& e) {
