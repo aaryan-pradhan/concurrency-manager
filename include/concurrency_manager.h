@@ -124,4 +124,10 @@ public:
      * @return String representation of the graph
      */
     std::string getResourceAllocationGraph() const;
+
+    /**
+     * @brief Log the current state of the resource allocation graph to a file
+     * @param transactionInfo Additional information about the current transaction
+     */
+    void logResourceAllocationGraph(const std::string& transactionInfo = "") const;
 };

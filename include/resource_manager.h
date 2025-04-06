@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <sstream>
+#include <fstream>  // Add this for file operations
 #include "logger.h"
 
 /**
@@ -26,6 +27,9 @@ private:
     // Logger for recording operations
     Logger &logger;
     
+    // File stream for RAG logging
+    static std::ofstream ragLogFile;
+    
     // Mutex for thread safety - changed to recursive mutex to allow nested locking
     mutable std::recursive_mutex mtx;
 
@@ -35,6 +39,11 @@ public:
      * @param logger Reference to the logger for recording operations
      */
     explicit ResourceAllocationGraph(Logger &logger);
+    
+    /**
+     * @brief Destructor to ensure log file is closed
+     */
+    ~ResourceAllocationGraph();
     
     /**
      * @brief Add an assignment edge (resource -> transaction)
@@ -96,6 +105,19 @@ public:
      * @return String representation of the graph
      */
     std::string toString() const;
+    
+    /**
+     * @brief Log the current state of the RAG to the log file
+     * @param transactionInfo Optional additional information about the current transaction
+     */
+    void logToFile(const std::string& transactionInfo = "") const;
+    
+    /**
+     * @brief Initialize the RAG log file
+     * @param filename The name of the log file
+     * @return true if file opened successfully, false otherwise
+     */
+    static bool initLogFile(const std::string& filename = "RAGoutput.log");
     
 private:
     /**

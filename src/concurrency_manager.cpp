@@ -307,3 +307,7 @@ bool ConcurrencyManager::checkForDeadlocks() {
 std::string ConcurrencyManager::getResourceAllocationGraph() const {
     return lockManager.getResourceAllocationGraph();
 }
+
+void ConcurrencyManager::logResourceAllocationGraph(const std::string& transactionInfo) const {
+    rag.logToFile(transactionInfo);
+}

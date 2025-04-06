@@ -1,8 +1,46 @@
 #include "../include/resource_manager.h"
 
+// Initialize static member
+std::ofstream ResourceAllocationGraph::ragLogFile;
+
 ResourceAllocationGraph::ResourceAllocationGraph(Logger &loggerRef)
     : logger(loggerRef) {
     logger.info("Resource Allocation Graph initialized");
+    
+    // Initialize log file if not done already
+    if (!ragLogFile.is_open()) {
+        initLogFile();
+    }
+}
+
+// Initialize the log file
+bool ResourceAllocationGraph::initLogFile(const std::string& filename) {
+    // Close if already open
+    if (ragLogFile.is_open()) {
+        ragLogFile.close();
+    }
+    
+    // Open the file
+    ragLogFile.open(filename, std::ios::out | std::ios::trunc);
+    
+    if (!ragLogFile.is_open()) {
+        return false;
+    }
+    
+    // Write header
+    ragLogFile << "=== RESOURCE ALLOCATION GRAPH LOG ===" << std::endl;
+    ragLogFile << "Started at: " << std::chrono::system_clock::now().time_since_epoch().count() << std::endl;
+    ragLogFile << "=======================================\n" << std::endl;
+    
+    return true;
+}
+
+// Destructor to close the file
+ResourceAllocationGraph::~ResourceAllocationGraph() {
+    if (ragLogFile.is_open()) {
+        ragLogFile << "\n=== RESOURCE ALLOCATION GRAPH LOG CLOSED ===" << std::endl;
+        ragLogFile.close();
+    }
 }
 
 void ResourceAllocationGraph::addAssignmentEdge(int resourceId, int txnId) {
@@ -175,4 +213,29 @@ std::string ResourceAllocationGraph::toString() const {
     
     ss << "===============================\n";
     return ss.str();
+}
+
+// Log to file method
+void ResourceAllocationGraph::logToFile(const std::string& transactionInfo) const {
+    std::lock_guard<std::recursive_mutex> lock(mtx);
+    
+    if (!ragLogFile.is_open()) {
+        initLogFile();
+    }
+    
+    // Get current timestamp
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    
+    // Write timestamp and optional transaction info
+    ragLogFile << "\n[" << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S") << "] ";
+    if (!transactionInfo.empty()) {
+        ragLogFile << transactionInfo << std::endl;
+    } else {
+        ragLogFile << "RAG update" << std::endl;
+    }
+    
+    // Write the actual RAG
+    ragLogFile << toString();
+    ragLogFile.flush();
 }
