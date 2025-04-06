@@ -5,29 +5,34 @@
 #include <chrono>
 #include <string>
 #include <iostream>
+#include <unordered_map>
+
+using txn_id_t = uint64_t;
 
 /**
  * @enum TransactionState
  * @brief Represents the current state of a transaction in the Two-Phase Locking protocol
  */
-enum class TransactionState {
-    GROWING,    // Initial phase where locks can be acquired but not released
-    SHRINKING,  // Phase where locks can be released but not acquired
-    COMMITTED,  // Transaction has successfully committed
-    ABORTED     // Transaction has been aborted
+enum class TransactionState
+{
+    GROWING,   // Initial phase where locks can be acquired but not released
+    SHRINKING, // Phase where locks can be released but not acquired
+    COMMITTED, // Transaction has successfully committed
+    ABORTED    // Transaction has been aborted
 };
 
 /**
  * @class Transaction
  * @brief Represents a database transaction with 2PL compliance
  */
-class Transaction {
+class Transaction
+{
 private:
-    int txnId;                           // Unique transaction identifier
-    TransactionState state;              // Current state of the transaction
-    std::set<int> locksHeld;             // Set of resource IDs for which this transaction holds locks
-    std::chrono::system_clock::time_point startTime;  // Transaction start timestamp
-    std::string metadata;                // Optional transaction metadata
+    int txnId;                                       // Unique transaction identifier
+    TransactionState state;                          // Current state of the transaction
+    std::set<int> locksHeld;                         // Set of resource IDs for which this transaction holds locks
+    std::chrono::system_clock::time_point startTime; // Transaction start timestamp
+    std::string metadata;                            // Optional transaction metadata
 
 public:
     /**
@@ -35,7 +40,12 @@ public:
      * @param id Unique identifier for this transaction
      * @param meta Optional metadata for this transaction
      */
-    Transaction(int id, const std::string& meta = "");
+    Transaction(int id, const std::string &meta = "");
+
+    /**
+     * @brief Destructor - unregisters the transaction from the static map
+     */
+    ~Transaction();
 
     /**
      * @brief Records acquisition of a lock on a resource
@@ -90,7 +100,7 @@ public:
      * @brief Gets all resources locked by this transaction
      * @return Set of resource IDs
      */
-    const std::set<int>& getLocksHeld() const;
+    const std::set<int> &getLocksHeld() const;
 
     /**
      * @brief Gets the transaction's start time
@@ -102,7 +112,7 @@ public:
      * @brief Gets transaction metadata
      * @return Metadata string
      */
-    const std::string& getMetadata() const;
+    const std::string &getMetadata() const;
 
     /**
      * @brief Checks if transaction holds a lock on specified resource
@@ -116,4 +126,16 @@ public:
      * @return Age of transaction
      */
     long getAgeMillis() const;
+
+    // Static map to store all active transactions by ID
+    static std::unordered_map<txn_id_t, Transaction *> active_transactions_;
+
+    // Register a transaction in the static map (call in constructor)
+    static void RegisterTransaction(Transaction *txn);
+
+    // Remove a transaction from the static map (call in destructor)
+    static void UnregisterTransaction(txn_id_t txn_id);
+
+    // Get a transaction by ID
+    static Transaction *GetTransaction(txn_id_t txn_id);
 };

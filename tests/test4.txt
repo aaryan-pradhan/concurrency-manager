@@ -1,0 +1,17 @@
+// Deadlock Detection check
+
+// Start transactions
+START T1
+START T2
+
+// Transactions 
+
+W1(A)
+W2(B)
+
+W1(B)
+W2(A)
+
+// Complete the transactions
+C2      // T2 commits - all its locks are released
+C1      // T1 commits - all its locks are released

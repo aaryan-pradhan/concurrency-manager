@@ -1,42 +1,44 @@
 #include "../include/concurrency_manager.h"
 #include <sstream>
-#include <algorithm>
+#include <iostream>
 
-ConcurrencyManager::ConcurrencyManager(const std::string& logFilePath)
-    : logger(logFilePath, true),
-      lockManager(logger), 
-      nextTxnId(1) {
-    logger.info("Concurrency Manager initialized with Two-Phase Locking protocol");
+ConcurrencyManager::ConcurrencyManager(const std::string& logFilePath, uint64_t detectionIntervalMs)
+    : logger(logFilePath), lockManager(logger), nextTxnId(1) {
+    
+    // Initialize deadlock detector with references to lock manager and logger
+    deadlockDetector = std::make_unique<DeadlockDetector>(lockManager, logger, detectionIntervalMs);
+    
+    logger.info("Concurrency Manager initialized with deadlock detection interval: " + 
+               std::to_string(detectionIntervalMs) + "ms");
 }
 
 ConcurrencyManager::~ConcurrencyManager() {
-    std::lock_guard<std::mutex> lock(mtx);
+    // Destroy deadlock detector first (stops background thread)
+    deadlockDetector.reset();
     
-    // Abort any active transactions on shutdown
-    std::vector<int> activeTxns;
-    for (const auto& pair : transactions) {
-        if (pair.second->getState() != TransactionState::COMMITTED && 
-            pair.second->getState() != TransactionState::ABORTED) {
-            activeTxns.push_back(pair.first);
+    // Cleanup remaining transactions
+    std::vector<int> txnIds;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        for (const auto& pair : transactions) {
+            txnIds.push_back(pair.first);
         }
     }
     
-    // Release the mutex before calling abortTransaction to avoid deadlock
-    lock.~lock_guard();
-    
-    for (int txnId : activeTxns) {
-        abortTransaction(txnId, "System shutdown");
+    // Abort remaining transactions
+    for (int id : txnIds) {
+        abortTransaction(id, "System shutdown");
     }
     
-    logger.info("Concurrency Manager shutdown");
+    logger.info("Concurrency Manager shut down");
 }
 
 Transaction* ConcurrencyManager::getTransaction(int txnId) {
     auto it = transactions.find(txnId);
-    if (it != transactions.end()) {
-        return it->second.get();
+    if (it == transactions.end()) {
+        return nullptr;
     }
-    return nullptr;
+    return it->second.get();
 }
 
 int ConcurrencyManager::beginTransaction(const std::string& metadata) {
@@ -45,131 +47,118 @@ int ConcurrencyManager::beginTransaction(const std::string& metadata) {
     int txnId = nextTxnId++;
     transactions[txnId] = std::make_unique<Transaction>(txnId, metadata);
     
-    logger.logTransactionStart(txnId);
+    // Transaction constructor will register itself with the static registry
+    
+    logger.info("Transaction T" + std::to_string(txnId) + " began" + 
+               (metadata.empty() ? "" : " with metadata: " + metadata));
+    
     return txnId;
 }
 
 bool ConcurrencyManager::acquireLock(int txnId, int resourceId, LockType lockType, bool wait) {
-    // First check transaction state without holding the lock manager's mutex
+    // Check if transaction exists
+    Transaction* txn;
     {
         std::lock_guard<std::mutex> lock(mtx);
-        
-        Transaction* txn = getTransaction(txnId);
+        txn = getTransaction(txnId);
         if (!txn) {
-            logger.error("Cannot acquire lock: Transaction T" + std::to_string(txnId) + " not found");
+            logger.warning("Transaction T" + std::to_string(txnId) + " not found while acquiring lock");
             return false;
         }
         
-        // In 2PL, locks can only be acquired in the growing phase
-        if (!txn->isInGrowingPhase()) {
-            logger.warning("Cannot acquire lock: Transaction T" + std::to_string(txnId) + 
-                         " is not in growing phase");
+        // Check if transaction is in a valid state for acquiring locks
+        if (txn->getState() != TransactionState::GROWING) {
+            logger.warning("Transaction T" + std::to_string(txnId) + " not in GROWING phase, cannot acquire lock");
             return false;
         }
     }
     
-    // Try to acquire the lock through the lock manager
-    // This may block if wait=true and the lock cannot be granted immediately
+    // Try to acquire lock
     bool acquired = lockManager.acquireLock(txnId, resourceId, lockType, wait);
     
-    // If lock acquired, update the transaction's record
     if (acquired) {
-        std::lock_guard<std::mutex> lock(mtx);
-        
-        Transaction* txn = getTransaction(txnId);
-        if (txn) {
-            txn->acquireLock(resourceId);
-        } else {
-            // This should not happen, but just in case
-            lockManager.releaseLock(txnId, resourceId);
-            logger.error("Transaction T" + std::to_string(txnId) + 
-                       " disappeared during lock acquisition. Rolling back lock.");
-            return false;
-        }
+        // Update transaction's record of held locks
+        txn->acquireLock(resourceId);
     }
     
     return acquired;
 }
 
 bool ConcurrencyManager::releaseLock(int txnId, int resourceId) {
-    std::unique_lock<std::mutex> lock(mtx);
-    
-    Transaction* txn = getTransaction(txnId);
-    if (!txn) {
-        logger.error("Cannot release lock: Transaction T" + std::to_string(txnId) + " not found");
-        return false;
+    // Check if transaction exists
+    Transaction* txn;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        txn = getTransaction(txnId);
+        if (!txn) {
+            logger.warning("Transaction T" + std::to_string(txnId) + " not found while releasing lock");
+            return false;
+        }
     }
     
-    // In basic 2PL, releasing a lock transitions the transaction to SHRINKING phase
-    // First, update the transaction's state
-    if (!txn->releaseLock(resourceId)) {
-        logger.error("Cannot release lock: Transaction T" + std::to_string(txnId) + 
-                   " doesn't hold lock on R" + std::to_string(resourceId));
-        return false;
-    }
-    
-    // Release the concurrency manager mutex before calling lock manager
-    // to avoid potential deadlocks
-    lock.unlock();
-    
-    // Then, release the lock in the lock manager
+    // Release the lock
     bool released = lockManager.releaseLock(txnId, resourceId);
     
     if (released) {
-        lock.lock();
-        logger.info("T" + std::to_string(txnId) + " released lock on R" + 
-                   std::to_string(resourceId) + " (now in " + 
-                   (txn->isInGrowingPhase() ? "GROWING" : "SHRINKING") + " phase)");
+        // Update transaction's record of held locks
+        txn->releaseLock(resourceId);
     }
     
     return released;
 }
 
 bool ConcurrencyManager::commitTransaction(int txnId) {
-    std::unique_lock<std::mutex> lock(mtx);
-    
-    Transaction* txn = getTransaction(txnId);
-    if (!txn) {
-        logger.error("Cannot commit: Transaction T" + std::to_string(txnId) + " not found");
-        return false;
+    Transaction* txn;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        txn = getTransaction(txnId);
+        if (!txn) {
+            logger.warning("Transaction T" + std::to_string(txnId) + " not found during commit");
+            return false;
+        }
     }
     
-    // Update the transaction state
-    if (!txn->commit()) {
-        logger.error("Cannot commit: Transaction T" + std::to_string(txnId) + 
-                   " is already committed or aborted");
-        return false;
+    // Try to commit the transaction
+    bool committed = txn->commit();
+    
+    if (committed) {
+        logger.info("Transaction T" + std::to_string(txnId) + " committed successfully");
+        
+        // Release all locks
+        lockManager.releaseAllLocks(txnId);
+        
+        // Remove transaction from active map
+        std::lock_guard<std::mutex> lock(mtx);
+        transactions.erase(txnId);
     }
     
-    // Release the concurrency manager mutex before calling lock manager
-    lock.unlock();
-    
-    // Release all locks held by the transaction
-    lockManager.releaseAllLocks(txnId);
-    
-    logger.logTransactionCommit(txnId);
-    return true;
+    return committed;
 }
 
 bool ConcurrencyManager::abortTransaction(int txnId, const std::string& reason) {
-    std::unique_lock<std::mutex> lock(mtx);
-    
-    Transaction* txn = getTransaction(txnId);
-    if (!txn) {
-        logger.error("Cannot abort: Transaction T" + std::to_string(txnId) + " not found");
-        return false;
+    Transaction* txn;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        txn = getTransaction(txnId);
+        if (!txn) {
+            logger.warning("Transaction T" + std::to_string(txnId) + " not found during abort");
+            return false;
+        }
     }
     
-    // Update the transaction state
+    // Abort the transaction
     txn->abort();
     
-    // Release the concurrency manager mutex before calling lock manager
-    lock.unlock();
+    logger.info("Transaction T" + std::to_string(txnId) + " aborted: " + 
+               (reason.empty() ? "User initiated" : reason));
     
-    // Release all locks held by the transaction
+    // Release all locks
     lockManager.releaseAllLocks(txnId);
     
-    logger.logTransactionAbort(txnId, reason);
+    // Remove transaction from active map
+    std::lock_guard<std::mutex> lock(mtx);
+    transactions.erase(txnId);
+    
     return true;
 }
 
@@ -178,78 +167,45 @@ TransactionState ConcurrencyManager::getTransactionState(int txnId) {
     
     Transaction* txn = getTransaction(txnId);
     if (!txn) {
-        logger.warning("Transaction T" + std::to_string(txnId) + " not found");
-        return TransactionState::ABORTED; // Return ABORTED for non-existent transactions
+        return TransactionState::ABORTED; // Default to aborted if not found
     }
     
     return txn->getState();
 }
 
 std::set<int> ConcurrencyManager::getLocksHeldBy(int txnId) {
-    std::lock_guard<std::mutex> lock(mtx);
-    
-    Transaction* txn = getTransaction(txnId);
-    if (!txn) {
-        logger.warning("Transaction T" + std::to_string(txnId) + " not found");
-        return {}; // Return empty set for non-existent transactions
-    }
-    
-    // Release our mutex before calling into the lock manager
-    lock.~lock_guard();
-    
     return lockManager.getResourcesLockedBy(txnId);
 }
 
 std::string ConcurrencyManager::getSystemState() const {
+    std::stringstream ss;
     std::lock_guard<std::mutex> lock(mtx);
     
-    std::stringstream ss;
-    ss << "=== Concurrency Manager State ===\n";
+    ss << "Concurrency Manager State:" << std::endl;
+    ss << "Active Transactions: " << transactions.size() << std::endl;
     
-    ss << "Active Transactions: " << transactions.size() << "\n";
     for (const auto& pair : transactions) {
-        int txnId = pair.first;
         const Transaction* txn = pair.second.get();
+        ss << "Transaction " << txn->getId() << ": " 
+           << (txn->getState() == TransactionState::GROWING ? "GROWING" : 
+              txn->getState() == TransactionState::SHRINKING ? "SHRINKING" : 
+              txn->getState() == TransactionState::COMMITTED ? "COMMITTED" : "ABORTED")
+           << ", Age: " << txn->getAgeMillis() << "ms";
         
-        ss << "- T" << txnId << ": ";
-        
-        // Convert state enum to string
-        switch (txn->getState()) {
-            case TransactionState::GROWING:
-                ss << "GROWING";
-                break;
-            case TransactionState::SHRINKING:
-                ss << "SHRINKING";
-                break;
-            case TransactionState::COMMITTED:
-                ss << "COMMITTED";
-                break;
-            case TransactionState::ABORTED:
-                ss << "ABORTED";
-                break;
-        }
-        
-        // Show metadata if available
         if (!txn->getMetadata().empty()) {
-            ss << " (" << txn->getMetadata() << ")";
+            ss << ", Metadata: " << txn->getMetadata();
         }
         
-        // Show age
-        ss << ", Age: " << txn->getAgeMillis() << "ms";
-        
-        // Show locks held
-        const auto& locks = txn->getLocksHeld();
-        if (!locks.empty()) {
-            ss << ", Locks: ";
-            bool first = true;
-            for (int resourceId : locks) {
-                if (!first) ss << ", ";
-                ss << "R" << resourceId;
-                first = false;
-            }
+        ss << std::endl;
+    }
+    
+    // Get wait-for graph from deadlock detector
+    auto edgeList = deadlockDetector->GetEdgeList();
+    if (!edgeList.empty()) {
+        ss << "Current Wait-For Graph:" << std::endl;
+        for (const auto& edge : edgeList) {
+            ss << "T" << edge.first << " -> T" << edge.second << std::endl;
         }
-        
-        ss << "\n";
     }
     
     return ss.str();

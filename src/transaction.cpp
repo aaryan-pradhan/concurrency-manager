@@ -1,10 +1,19 @@
 #include "../include/transaction.h"
+#include <unordered_map>
 
 Transaction::Transaction(int id, const std::string& meta)
     : txnId(id), 
       state(TransactionState::GROWING), 
       startTime(std::chrono::system_clock::now()), 
       metadata(meta) {
+    // Register this transaction in the static map
+    RegisterTransaction(this);
+}
+
+// Destructor
+Transaction::~Transaction() {
+    // Unregister this transaction from the static map
+    UnregisterTransaction(txnId);
 }
 
 bool Transaction::acquireLock(int resourceId) {
@@ -94,4 +103,28 @@ long Transaction::getAgeMillis() const {
     auto now = std::chrono::system_clock::now();
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         now - startTime).count();
+}
+
+// Initialize the static map
+std::unordered_map<txn_id_t, Transaction*> Transaction::active_transactions_;
+
+// Register a new transaction
+void Transaction::RegisterTransaction(Transaction* txn) {
+    if (txn != nullptr) {
+        active_transactions_[txn->getId()] = txn;
+    }
+}
+
+// Remove a transaction from the registry
+void Transaction::UnregisterTransaction(txn_id_t txn_id) {
+    active_transactions_.erase(txn_id);
+}
+
+// Get a transaction by ID
+Transaction* Transaction::GetTransaction(txn_id_t txn_id) {
+    auto it = active_transactions_.find(txn_id);
+    if (it != active_transactions_.end()) {
+        return it->second;
+    }
+    return nullptr;
 }

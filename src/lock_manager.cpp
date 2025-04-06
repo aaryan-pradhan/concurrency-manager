@@ -1,4 +1,5 @@
 #include "../include/lock_manager.h"
+#include "../include/transaction.h"
 #include <algorithm>
 #include <thread>
 
@@ -18,8 +19,14 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
     // Add to waiting set
     waitingTransactions.insert(txnId);
     
-    // Create a predicate that checks if this transaction can get the lock
+    // Create a predicate that checks if this transaction can get the lock OR has been aborted
     auto canAcquireLock = [this, txnId, resourceId, lockType]() {
+        // Check if transaction has been aborted (by getting its current state)
+        Transaction* txn = Transaction::GetTransaction(txnId);
+        if (txn == nullptr || txn->getState() == TransactionState::ABORTED) {
+            return true;  // Exit the wait if transaction is aborted
+        }
+        
         // If resource doesn't exist, it's available
         if (lockTable.find(resourceId) == lockTable.end()) {
             return true;
@@ -41,34 +48,17 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
         return isCompatible(resourceId, *it);
     };
     
-    // Wait with timeout
+    // Wait indefinitely until the condition is met or the transaction is aborted
     std::unique_lock<std::mutex> lock(mtx);
-    bool success = cv.wait_for(lock, lockTimeout, canAcquireLock);
+    cv.wait(lock, canAcquireLock);
     
     // Remove from waiting set
     waitingTransactions.erase(txnId);
     
-    if (!success) {
-        logger.warning("T" + std::to_string(txnId) + " timed out waiting for lock on R" + 
-                     std::to_string(resourceId));
-        
-        // Find and remove the request
-        if (lockTable.find(resourceId) != lockTable.end()) {
-            auto& requests = lockTable[resourceId];
-            auto it = std::find_if(requests.begin(), requests.end(),
-                                  [txnId](const LockRequest& req) {
-                                      return !req.granted && req.transactionId == txnId;
-                                  });
-            
-            if (it != requests.end()) {
-                requests.erase(it);
-                if (requests.empty()) {
-                    lockTable.erase(resourceId);
-                }
-            }
-        }
-        
-        return false;
+    // Check if the transaction was aborted
+    Transaction* txn = Transaction::GetTransaction(txnId);
+    if (txn == nullptr || txn->getState() == TransactionState::ABORTED) {
+        return false;  // Return false if transaction has been aborted
     }
     
     // Try to grant the lock
@@ -81,7 +71,9 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
         
         if (it != requests.end() && isCompatible(resourceId, *it)) {
             it->granted = true;
-            logger.logLockAcquired(txnId, resourceId, lockTypeToString(it->type));
+            logger.info("T" + std::to_string(txnId) + " acquired " + 
+                       lockTypeToString(it->type) + " lock on R" + 
+                       std::to_string(resourceId));
             return true;
         }
     }
@@ -93,7 +85,9 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
 bool LockManager::tryGrantLock(int resourceId, LockRequest& request) {
     if (isCompatible(resourceId, request)) {
         request.granted = true;
-        logger.logLockAcquired(request.transactionId, resourceId, lockTypeToString(request.type));
+        logger.info("T" + std::to_string(request.transactionId) + " acquired " + 
+                   lockTypeToString(request.type) + " lock on R" + 
+                   std::to_string(resourceId));
         return true;
     }
     return false;
@@ -236,7 +230,8 @@ bool LockManager::upgradeLockInternal(int txnId, int resourceId, bool wait) {
     if (canUpgrade) {
         // Upgrade the lock
         it->type = LockType::EXCLUSIVE;
-        logger.logLockAcquired(txnId, resourceId, "EXCLUSIVE (upgraded)");
+        logger.info("T" + std::to_string(txnId) + " upgraded lock to EXCLUSIVE on R" + 
+                   std::to_string(resourceId));
         return true;
     } else if (!wait) {
         // Can't upgrade immediately and don't want to wait
@@ -244,9 +239,18 @@ bool LockManager::upgradeLockInternal(int txnId, int resourceId, bool wait) {
                       std::to_string(resourceId));
         return false;
     } else {
-        // Would need to wait for upgrade
-        logger.warning("T" + std::to_string(txnId) + " would need to wait for lock upgrade on R" + 
-                      std::to_string(resourceId));
+        // Create a new exclusive lock request that will wait
+        // First, remove the shared lock
+        requests.erase(it);
+        
+        // Then add a new exclusive lock request
+        LockRequest newRequest(txnId, LockType::EXCLUSIVE);
+        requests.push_back(newRequest);
+        
+        // Return false to indicate the lock hasn't been upgraded yet
+        // The transaction will need to wait
+        logger.info("T" + std::to_string(txnId) + " waiting to upgrade lock on R" + 
+                   std::to_string(resourceId));
         return false;
     }
 }
@@ -259,7 +263,15 @@ std::vector<int> LockManager::getLockHolders(int resourceId) const {
 }
 
 bool LockManager::acquireLock(int txnId, int resourceId, LockType lockType, bool wait) {
-    logger.logLockAcquireAttempt(txnId, resourceId, lockTypeToString(lockType));
+    // Check if transaction is valid and not aborted
+    Transaction* txn = Transaction::GetTransaction(txnId);
+    if (txn == nullptr || txn->getState() == TransactionState::ABORTED) {
+        logger.warning("T" + std::to_string(txnId) + " cannot acquire lock - transaction is aborted");
+        return false;
+    }
+
+    logger.info("T" + std::to_string(txnId) + " attempting to acquire " + 
+               lockTypeToString(lockType) + " lock on R" + std::to_string(resourceId));
     
     std::unique_lock<std::mutex> lock(mtx);
     
@@ -278,7 +290,10 @@ bool LockManager::acquireLock(int txnId, int resourceId, LockType lockType, bool
         // If it holds SHARED and wants EXCLUSIVE, try to upgrade
         if (currentLockType && *currentLockType == LockType::SHARED && 
             lockType == LockType::EXCLUSIVE) {
-            return upgradeLockInternal(txnId, resourceId, wait);
+            lock.unlock();  // Release the lock before waiting
+            logger.info("T" + std::to_string(txnId) + " attempting to upgrade lock on R" + 
+                       std::to_string(resourceId));
+            return upgradeLock(txnId, resourceId, wait);
         }
     }
     
@@ -293,7 +308,8 @@ bool LockManager::acquireLock(int txnId, int resourceId, LockType lockType, bool
         newRequest.granted = true;
         lockTable[resourceId].push_back(newRequest);
         
-        logger.logLockAcquired(txnId, resourceId, lockTypeToString(lockType));
+        logger.info("T" + std::to_string(txnId) + " acquired " + 
+                   lockTypeToString(lockType) + " lock on R" + std::to_string(resourceId));
         return true;
     } else if (!wait) {
         // Can't grant immediately and don't want to wait
@@ -304,7 +320,9 @@ bool LockManager::acquireLock(int txnId, int resourceId, LockType lockType, bool
         // Add request to queue and wait
         auto holders = getLockHoldersInternal(resourceId);
         if (!holders.empty()) {
-            logger.logLockWaiting(txnId, resourceId, holders[0]);
+            logger.info("T" + std::to_string(txnId) + " waiting for lock on R" + 
+                       std::to_string(resourceId) + " held by T" + 
+                       std::to_string(holders[0]));
         }
         
         // Add the request to the queue
@@ -353,12 +371,14 @@ bool LockManager::releaseLock(int txnId, int resourceId) {
         for (auto& req : requests) {
             if (!req.granted && isCompatible(resourceId, req)) {
                 req.granted = true;
-                logger.logLockAcquired(req.transactionId, resourceId, lockTypeToString(req.type));
+                logger.info("T" + std::to_string(req.transactionId) + " acquired " + 
+                           lockTypeToString(req.type) + " lock on R" + std::to_string(resourceId));
             }
         }
     }
     
-    logger.logLockReleased(txnId, resourceId);
+    logger.info("T" + std::to_string(txnId) + " released lock on R" + 
+               std::to_string(resourceId));
     
     // Notify waiting transactions
     notifyWaitingTransactions();
@@ -368,6 +388,33 @@ bool LockManager::releaseLock(int txnId, int resourceId) {
 
 void LockManager::releaseAllLocks(int txnId) {
     std::lock_guard<std::mutex> lock(mtx);
+
+    // CRITICAL FIX: First remove the transaction from all waiting queues
+    // where it might be waiting for locks but hasn't acquired them yet
+    for (auto& entry : lockTable) {
+        auto& requests = entry.second;
+        
+        // Remove any pending (non-granted) requests from this transaction
+        auto originalSize = requests.size();
+        requests.erase(
+            std::remove_if(requests.begin(), requests.end(), 
+                         [txnId](const LockRequest& req) { 
+                             return !req.granted && req.transactionId == txnId; 
+                         }),
+            requests.end()
+        );
+        
+        // If we removed any waiting requests, log it
+        if (requests.size() < originalSize) {
+            logger.info("T" + std::to_string(txnId) + " removed from waiting queue for resource R" + 
+                       std::to_string(entry.first));
+        }
+    }
+    
+    // Also explicitly remove from the waitingTransactions set
+    if (waitingTransactions.erase(txnId) > 0) {
+        logger.info("T" + std::to_string(txnId) + " removed from global waiting set");
+    }
     
     std::set<int> resourcesToRelease;
     
@@ -394,7 +441,8 @@ void LockManager::releaseAllLocks(int txnId) {
         
         if (it != requests.end()) {
             requests.erase(it);
-            logger.logLockReleased(txnId, resourceId);
+            logger.info("T" + std::to_string(txnId) + " released lock on R" + 
+                       std::to_string(resourceId));
             
             // If no more lock requests for this resource, remove the resource entry
             if (requests.empty()) {
@@ -404,7 +452,9 @@ void LockManager::releaseAllLocks(int txnId) {
                 for (auto& req : requests) {
                     if (!req.granted && isCompatible(resourceId, req)) {
                         req.granted = true;
-                        logger.logLockAcquired(req.transactionId, resourceId, lockTypeToString(req.type));
+                        logger.info("T" + std::to_string(req.transactionId) + " acquired " + 
+                                   lockTypeToString(req.type) + " lock on R" + 
+                                   std::to_string(resourceId));
                     }
                 }
             }
@@ -441,6 +491,22 @@ std::vector<int> LockManager::getWaitingTransactions(int resourceId) const {
 }
 
 bool LockManager::upgradeLock(int txnId, int resourceId, bool wait) {
-    std::lock_guard<std::mutex> lock(mtx);
-    return upgradeLockInternal(txnId, resourceId, wait);
+    std::unique_lock<std::mutex> lock(mtx);
+    
+    // First try to upgrade immediately
+    bool immediate = upgradeLockInternal(txnId, resourceId, true);
+    
+    if (immediate || !wait) {
+        // Either upgraded successfully or don't want to wait
+        return immediate;
+    }
+    
+    // If we reach here, we need to wait for the upgrade
+    // First, make sure we have a request in the queue (done by upgradeLockInternal)
+    
+    // Now we need to wait - release the lock before waiting
+    lock.unlock();
+    
+    // Wait for the lock to be available
+    return waitForLock(txnId, resourceId, LockType::EXCLUSIVE);
 }

@@ -7,11 +7,12 @@
 #include "transaction.h"
 #include "lock_manager.h"
 #include "logger.h"
+#include "deadlock_detector.h"
 
 /**
  * @class ConcurrencyManager
  * @brief Coordinates transaction management using Two-Phase Locking protocol
- *        without deadlock detection
+ *        with deadlock detection
  */
 class ConcurrencyManager {
 private:
@@ -20,6 +21,9 @@ private:
     
     // Logger for operations
     Logger logger;
+    
+    // Deadlock detector
+    std::unique_ptr<DeadlockDetector> deadlockDetector;
     
     // Map of active transactions
     std::unordered_map<int, std::unique_ptr<Transaction>> transactions;
@@ -41,8 +45,10 @@ public:
     /**
      * @brief Constructs a new ConcurrencyManager
      * @param logFilePath Path to the log file
+     * @param detectionIntervalMs Interval for deadlock detection in milliseconds
      */
-    explicit ConcurrencyManager(const std::string& logFilePath = "concurrency.log");
+    explicit ConcurrencyManager(const std::string& logFilePath = "concurrency.log",
+                               uint64_t detectionIntervalMs = 200);
     
     /**
      * @brief Destructor - ensures proper cleanup

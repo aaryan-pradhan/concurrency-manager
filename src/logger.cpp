@@ -19,7 +19,9 @@ Logger::Logger(const std::string& filename, bool toConsole, LogLevel level)
     if (!logFile.is_open()) {
         std::cerr << "Failed to open log file: " << filename << std::endl;
     }
-    
+    // Write a new line to separate logs from previous runs
+    logFile << std::endl;
+    logFile << "==================== New Log Session ====================" << std::endl;
     info("Logging started");
 }
 
