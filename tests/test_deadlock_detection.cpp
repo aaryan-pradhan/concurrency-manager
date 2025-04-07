@@ -86,6 +86,16 @@ std::atomic<int> activeThreads(0);
 // Flag to track if deadlock was detected
 std::atomic<bool> deadlockDetected(false);
 
+// Add this helper function to log RAG state
+void logRAGState(ConcurrencyManager &cm, int txnNum, const std::string &operation) {
+    SYNCHRONIZED_COUT("\n--- RAG STATE AFTER T" << txnNum << " " << operation << " ---");
+    SYNCHRONIZED_COUT(cm.getResourceAllocationGraph());
+    SYNCHRONIZED_COUT("--------------------------------------\n");
+    
+    // Also log to file for persistent records
+    cm.logResourceAllocationGraph("T" + std::to_string(txnNum) + " " + operation);
+}
+
 // Run a transaction in its own thread
 void runTransaction(int txnNum, const std::vector<Operation> &operations,
                     ConcurrencyManager &cm,
@@ -109,6 +119,7 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations,
                 txnId = cm.beginTransaction("Transaction " + std::to_string(txnNum));
                 txnIdMap[txnNum] = txnId;
                 SYNCHRONIZED_COUT("Started T" << txnNum << " (ID: " << txnId << ")");
+                logRAGState(cm, txnNum, "started");
                 continue;
             }
 
@@ -121,7 +132,6 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations,
             }
 
             // Check if transaction was aborted (by deadlock detector or otherwise)
-            // Do this check before EVERY operation
             if (cm.getTransactionState(txnId) == TransactionState::ABORTED)
             {
                 if (!wasAborted)
@@ -129,8 +139,9 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations,
                     SYNCHRONIZED_COUT("T" << txnNum << " was aborted by deadlock detector, stopping execution!");
                     deadlockDetected = true;
                     wasAborted = true;
+                    logRAGState(cm, txnNum, "was aborted by deadlock detector");
                 }
-                break; // Exit the operation loop completely
+                break;
             }
 
             // Process operations only if not aborted
@@ -143,18 +154,20 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations,
                                       << " (Resource " << resourceId << ")");
                 bool success = cm.acquireLock(txnId, resourceId, LockType::SHARED, true);
 
-                // IMPORTANT: Check if we were aborted while waiting
+                // Check if we were aborted while waiting
                 if (cm.getTransactionState(txnId) == TransactionState::ABORTED)
                 {
                     SYNCHRONIZED_COUT("T" << txnNum << " was aborted while waiting for lock!");
                     deadlockDetected = true;
                     wasAborted = true;
-                    break; // Break from switch
+                    logRAGState(cm, txnNum, "was aborted while waiting for lock");
+                    break;
                 }
 
                 if (success)
                 {
                     SYNCHRONIZED_COUT("T" << txnNum << " acquired READ lock on " << op.item);
+                    logRAGState(cm, txnNum, "acquired READ lock on " + op.item);
                 }
                 else
                 {
@@ -169,18 +182,20 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations,
                                       << " (Resource " << resourceId << ")");
                 bool success = cm.acquireLock(txnId, resourceId, LockType::EXCLUSIVE, true);
 
-                // IMPORTANT: Check if we were aborted while waiting
+                // Check if we were aborted while waiting
                 if (cm.getTransactionState(txnId) == TransactionState::ABORTED)
                 {
                     SYNCHRONIZED_COUT("T" << txnNum << " was aborted while waiting for lock!");
                     deadlockDetected = true;
                     wasAborted = true;
-                    break; // Break from switch
+                    logRAGState(cm, txnNum, "was aborted while waiting for lock");
+                    break;
                 }
 
                 if (success)
                 {
                     SYNCHRONIZED_COUT("T" << txnNum << " acquired WRITE lock on " << op.item);
+                    logRAGState(cm, txnNum, "acquired WRITE lock on " + op.item);
                 }
                 else
                 {
@@ -191,17 +206,20 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations,
             case Operation::COMMIT:
                 SYNCHRONIZED_COUT("T" << txnNum << " committing");
                 cm.commitTransaction(txnId);
+                logRAGState(cm, txnNum, "committing");
                 break;
             case Operation::ABORT:
                 SYNCHRONIZED_COUT("T" << txnNum << " explicitly aborting");
                 cm.abortTransaction(txnId, "User requested abort");
                 wasAborted = true;
+                logRAGState(cm, txnNum, "explicitly aborting");
                 break;
             case Operation::RELEASE:
             {
                 int resourceId = getResourceId(op.item);
                 SYNCHRONIZED_COUT("T" << txnNum << " releasing lock on " << op.item);
                 cm.releaseLock(txnId, resourceId);
+                logRAGState(cm, txnNum, "releasing lock on " + op.item);
                 break;
             }
             }
