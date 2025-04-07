@@ -107,17 +107,17 @@ Lock waiting is implemented using C++ condition variables:
 ### Compilation
 Use your preferred build system or compiler to compile the project. For example:
 ``` bash
-g++ -std=c++17 main.cpp LockManager.cpp ConcurrencyManager.cpp Transaction.cpp Logger.cpp -o 2pl_system
+g++ -std=c++17 -o 2pl_test_runner src/2pl_test_runner.cpp src/concurrency_manager.cpp src/transaction.cpp src/lock_manager.cpp src/logger.cpp -I include/ -pthread
 g++ -std=c++17 -o deadlock_test tests/test_deadlock_detection.cpp src/concurrency_manager.cpp src/lock_manager.cpp src/deadlock_detector.cpp src/transaction.cpp src/logger.cpp -pthread
 ```
 
 ### Running Tests
 Run predefined test cases to validate the implementation:
 ``` bash
-./2pl_system < tests/test1.txt
-./2pl_system < tests/test2.txt
-./2pl_system < tests/test3.txt
-./deadlock_test < tests/test4.txt
+./2pl_test_runner tests/test1.txt
+./2pl_test_runner tests/test2.txt
+./2pl_test_runner tests/test3.txt
+./deadlock_test tests/test4.txt
 ```
 
 ## Test Cases
