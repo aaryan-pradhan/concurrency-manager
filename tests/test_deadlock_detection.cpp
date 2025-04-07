@@ -101,7 +101,7 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations,
         for (const auto &op : operations)
         {
             // Add a small delay between operations for realism
-            std::this_thread::sleep_for(std::chrono::milliseconds(10 + rand() % 50));
+            // std::this_thread::sleep_for(std::chrono::milliseconds(10 + rand() % 50));
 
             // Handle START operation
             if (op.type == Operation::START)
