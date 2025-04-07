@@ -1,15 +1,16 @@
 #include "../include/concurrency_manager.h"
 #include <sstream>
 #include <iostream>
+#include <limits>
 
 ConcurrencyManager::ConcurrencyManager(const std::string& logFilePath, uint64_t detectionIntervalMs)
-    : logger(logFilePath), lockManager(logger), nextTxnId(1) {
-    
-    // Initialize deadlock detector with references to lock manager and logger
-    deadlockDetector = std::make_unique<DeadlockDetector>(lockManager, logger, detectionIntervalMs);
-    
+    : logger(logFilePath, true),
+      rag(logger),
+      lockManager(logger, rag), 
+      nextTxnId(1) {
+    logger.info("Concurrency Manager initialized with Two-Phase Locking protocol and RAG");
     logger.info("Concurrency Manager initialized with deadlock detection interval: " + 
-               std::to_string(detectionIntervalMs) + "ms");
+        std::to_string(detectionIntervalMs) + "ms");
 }
 
 ConcurrencyManager::~ConcurrencyManager() {
@@ -186,12 +187,26 @@ std::string ConcurrencyManager::getSystemState() const {
     
     for (const auto& pair : transactions) {
         const Transaction* txn = pair.second.get();
-        ss << "Transaction " << txn->getId() << ": " 
-           << (txn->getState() == TransactionState::GROWING ? "GROWING" : 
-              txn->getState() == TransactionState::SHRINKING ? "SHRINKING" : 
-              txn->getState() == TransactionState::COMMITTED ? "COMMITTED" : "ABORTED")
-           << ", Age: " << txn->getAgeMillis() << "ms";
         
+        ss << "- T" <<  txn->getId() << ": ";
+        
+        // Convert state enum to string
+        switch (txn->getState()) {
+            case TransactionState::GROWING:
+                ss << "GROWING";
+                break;
+            case TransactionState::SHRINKING:
+                ss << "SHRINKING";
+                break;
+            case TransactionState::COMMITTED:
+                ss << "COMMITTED";
+                break;
+            case TransactionState::ABORTED:
+                ss << "ABORTED";
+                break;
+        }
+        
+        // Show metadata if available
         if (!txn->getMetadata().empty()) {
             ss << ", Metadata: " << txn->getMetadata();
         }
@@ -209,4 +224,59 @@ std::string ConcurrencyManager::getSystemState() const {
     }
     
     return ss.str();
+}
+
+// Implement deadlock checking
+bool ConcurrencyManager::checkForDeadlocks() {
+    std::vector<int> deadlockCycle;
+    
+    // Log deadlock detection start
+    logger.logDeadlockDetectionStart();
+    
+    // Check for deadlocks using the RAG
+    bool foundDeadlock = lockManager.detectDeadlock(deadlockCycle);
+    
+    if (foundDeadlock) {
+        // Log deadlock detection
+        logger.logDeadlockDetected(deadlockCycle);
+        
+        // Choose a victim (youngest transaction in the cycle)
+        int victimId = -1;
+        long youngestAge = std::numeric_limits<long>::max();
+        
+        std::lock_guard<std::mutex> lock(mtx);
+        for (int id : deadlockCycle) {
+            // Skip resource IDs (they're negative in our convention)
+            if (id < 0) continue;
+            
+            Transaction* txn = getTransaction(id);
+            if (txn && txn->getAgeMillis() < youngestAge) {
+                youngestAge = txn->getAgeMillis();
+                victimId = id;
+            }
+        }
+        
+        // Abort the victim transaction
+        if (victimId != -1) {
+            logger.logDeadlockResolution(victimId);
+            
+            // Release lock before calling abortTransaction to avoid deadlock
+            lock.~lock_guard();
+            abortTransaction(victimId, "Deadlock resolution");
+        }
+        
+        logger.logDeadlockDetectionComplete(true);
+        return true;
+    }
+    
+    logger.logDeadlockDetectionComplete(false);
+    return false;
+}
+
+std::string ConcurrencyManager::getResourceAllocationGraph() const {
+    return lockManager.getResourceAllocationGraph();
+}
+
+void ConcurrencyManager::logResourceAllocationGraph(const std::string& transactionInfo) const {
+    rag.logToFile(transactionInfo);
 }

@@ -8,6 +8,7 @@
 #include "lock_manager.h"
 #include "logger.h"
 #include "deadlock_detector.h"
+#include "resource_manager.h"  // Add this include
 
 /**
  * @class ConcurrencyManager
@@ -24,6 +25,9 @@ private:
     
     // Deadlock detector
     std::unique_ptr<DeadlockDetector> deadlockDetector;
+    
+    // Resource allocation graph for deadlock detection
+    ResourceAllocationGraph rag;
     
     // Map of active transactions
     std::unordered_map<int, std::unique_ptr<Transaction>> transactions;
@@ -114,4 +118,22 @@ public:
      * @return String representation of the concurrency manager state
      */
     std::string getSystemState() const;
+    
+    /**
+     * @brief Check for a deadlock in the system
+     * @return true if a deadlock was found and resolved, false otherwise
+     */
+    bool checkForDeadlocks();
+    
+    /**
+     * @brief Get a string representation of the resource allocation graph
+     * @return String representation of the graph
+     */
+    std::string getResourceAllocationGraph() const;
+
+    /**
+     * @brief Log the current state of the resource allocation graph to a file
+     * @param transactionInfo Additional information about the current transaction
+     */
+    void logResourceAllocationGraph(const std::string& transactionInfo = "") const;
 };
