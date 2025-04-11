@@ -27,9 +27,6 @@ private:
     // Logger for recording operations
     Logger &logger;
     
-    // File stream for RAG logging
-    static std::ofstream ragLogFile;
-    
     // Mutex for thread safety - changed to recursive mutex to allow nested locking
     mutable std::recursive_mutex mtx;
 
@@ -117,7 +114,7 @@ public:
      * @param filename The name of the log file
      * @return true if file opened successfully, false otherwise
      */
-    static bool initLogFile(const std::string& filename = "RAGoutput.log");
+    bool initLogFile(const std::string& filename = "rag_log.txt");
     
 private:
     /**

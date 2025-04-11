@@ -1,28 +1,23 @@
 #include "../include/resource_manager.h"
 
-// Initialize static member
-std::ofstream ResourceAllocationGraph::ragLogFile;
-
 ResourceAllocationGraph::ResourceAllocationGraph(Logger &loggerRef)
     : logger(loggerRef) {
     logger.info("Resource Allocation Graph initialized");
     
-    // Initialize log file if not done already
-    if (!ragLogFile.is_open()) {
-        initLogFile();
+    // Initialize log file
+    if (!initLogFile()) {
+        logger.error("Failed to initialize log file for Resource Allocation Graph");
+        throw std::runtime_error("Failed to initialize log file for Resource Allocation Graph");
     }
+
+    std::cout << "Resource Allocation Graph initialized" << std::endl;
 }
 
 // Initialize the log file
 bool ResourceAllocationGraph::initLogFile(const std::string& filename) {
-    // Close if already open
-    if (ragLogFile.is_open()) {
-        ragLogFile.close();
-    }
-    
-    // Open the file
-    ragLogFile.open(filename, std::ios::out | std::ios::trunc);
-    
+
+    std::ofstream ragLogFile(filename, std::ios::app);
+
     if (!ragLogFile.is_open()) {
         return false;
     }
@@ -37,10 +32,7 @@ bool ResourceAllocationGraph::initLogFile(const std::string& filename) {
 
 // Destructor to close the file
 ResourceAllocationGraph::~ResourceAllocationGraph() {
-    if (ragLogFile.is_open()) {
-        ragLogFile << "\n=== RESOURCE ALLOCATION GRAPH LOG CLOSED ===" << std::endl;
-        ragLogFile.close();
-    }
+    std::ofstream ragLogFile("rag_log.txt", std::ios::app);
 }
 
 void ResourceAllocationGraph::addAssignmentEdge(int resourceId, int txnId) {
@@ -219,10 +211,8 @@ std::string ResourceAllocationGraph::toString() const {
 void ResourceAllocationGraph::logToFile(const std::string& transactionInfo) const {
     std::lock_guard<std::recursive_mutex> lock(mtx);
     
-    if (!ragLogFile.is_open()) {
-        initLogFile();
-    }
-    
+    std::ofstream ragLogFile = std::ofstream("rag_log.txt", std::ios::app);
+
     // Get current timestamp
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);

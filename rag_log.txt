@@ -1,0 +1,406 @@
+=== RESOURCE ALLOCATION GRAPH LOG ===
+Started at: 1744394709224643001
+=======================================
+
+
+[2025-04-11 23:35:09] T1 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:09] T2 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:09] T1 acquired WRITE lock on A
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:09] T2 acquired WRITE lock on B
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:09] T2 was aborted while waiting for lock
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:09] T1 committing
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+=== RESOURCE ALLOCATION GRAPH LOG ===
+Started at: 1744394726247392283
+=======================================
+
+
+[2025-04-11 23:35:26] T1 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:26] T2 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:26] T1 acquired WRITE lock on A
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:26] T2 acquired WRITE lock on B
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:26] T2 was aborted while waiting for lock
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:26] T1 committing
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+=== RESOURCE ALLOCATION GRAPH LOG ===
+Started at: 1744394752577155134
+=======================================
+
+
+[2025-04-11 23:35:52] T1 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:52] T2 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:52] T1 acquired WRITE lock on A
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:52] T2 acquired WRITE lock on B
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:52] T2 was aborted while waiting for lock
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:52] T1 committing
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+=== RESOURCE ALLOCATION GRAPH LOG ===
+Started at: 1744394754287293099
+=======================================
+
+
+[2025-04-11 23:35:54] T1 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:54] T2 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:54] T1 acquired WRITE lock on A
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:54] T2 acquired WRITE lock on B
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:54] T2 was aborted while waiting for lock
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:54] T1 committing
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+=== RESOURCE ALLOCATION GRAPH LOG ===
+Started at: 1744394755830397403
+=======================================
+
+
+[2025-04-11 23:35:55] T1 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:55] T2 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:55] T1 acquired WRITE lock on A
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:55] T2 acquired WRITE lock on B
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:55] T2 was aborted while waiting for lock
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:55] T1 committing
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+=== RESOURCE ALLOCATION GRAPH LOG ===
+Started at: 1744394756848037898
+=======================================
+
+
+[2025-04-11 23:35:56] T1 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:56] T2 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:56] T1 acquired WRITE lock on A
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:56] T2 acquired WRITE lock on B
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:56] T2 was aborted while waiting for lock
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:56] T1 committing
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+=== RESOURCE ALLOCATION GRAPH LOG ===
+Started at: 1744394757898243033
+=======================================
+
+
+[2025-04-11 23:35:57] T1 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:57] T2 started
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:57] T1 acquired WRITE lock on A
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:57] T2 acquired WRITE lock on B
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1002 → T2
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:58] T2 was aborted while waiting for lock
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+  R1001 → T1
+Request Edges (T → R):
+  T1 → R1002
+Claim Edges (T → R):
+===============================
+
+[2025-04-11 23:35:58] T1 committing
+
+=== RESOURCE ALLOCATION GRAPH ===
+Assignment Edges (R → T):
+Request Edges (T → R):
+Claim Edges (T → R):
+===============================

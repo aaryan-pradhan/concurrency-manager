@@ -9,6 +9,7 @@ ConcurrencyManager::ConcurrencyManager(const std::string& logFilePath, uint64_t 
       lockManager(logger, rag), 
       nextTxnId(1) {
     // Initialize deadlock detector
+    
     deadlockDetector = std::make_unique<DeadlockDetector>(lockManager, logger, detectionIntervalMs);
     
     logger.info("Concurrency Manager initialized with Two-Phase Locking protocol and RAG");

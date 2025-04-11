@@ -96,10 +96,10 @@ void logRAGState(ConcurrencyManager &cm, int txnNum, const std::string &operatio
     cm.logResourceAllocationGraph("T" + std::to_string(txnNum) + " " + operation);
 }
 
+ConcurrencyManager cm("deadlock_test.log", 100);
+
 // Run a transaction in its own thread
-void runTransaction(int txnNum, const std::vector<Operation> &operations,
-                    ConcurrencyManager &cm,
-                    std::map<int, int> &txnIdMap)
+void runTransaction(int txnNum, const std::vector<Operation> &operations)
 {
     activeThreads++;
 
@@ -117,7 +117,6 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations,
             if (op.type == Operation::START)
             {
                 txnId = cm.beginTransaction("Transaction " + std::to_string(txnNum));
-                txnIdMap[txnNum] = txnId;
                 SYNCHRONIZED_COUT("Started T" << txnNum << " (ID: " << txnId << ")");
                 logRAGState(cm, txnNum, "started");
                 continue;
@@ -330,44 +329,27 @@ int main(int argc, char *argv[])
     // Check command line arguments
     if (argc < 2)
     {
-        std::cerr << "Usage: " << argv[0] << " <test-file> [detection-interval-ms]" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <test-file>" << std::endl;
         return 1;
     }
 
     std::string testFile = argv[1];
-
-    // Default detection interval is 100ms, but can be overridden by command-line arg
-    uint64_t detectionIntervalMs = 100;
-    if (argc > 2)
-    {
-        detectionIntervalMs = std::stoul(argv[2]);
-    }
-
-    // Initialize concurrency manager with deadlock detection
-    ConcurrencyManager cm("deadlock_test.log", detectionIntervalMs);
 
     try
     {
         // Parse test file
         auto transactionOperations = parseTestFile(testFile);
 
-        // Map from test transaction numbers to actual transaction IDs
-        std::map<int, int> txnIdMap;
-
         // Create threads for each transaction
         std::vector<std::thread> threads;
-
-        SYNCHRONIZED_COUT("Starting test with " << transactionOperations.size()
-                                                << " transactions (deadlock detection interval: "
-                                                << detectionIntervalMs << "ms)");
-
+        
         for (const auto &ops : transactionOperations)
         {
             if (ops.empty())
                 continue;
 
             int txnNum = ops[0].txnNum;
-            threads.emplace_back(runTransaction, txnNum, ops, std::ref(cm), std::ref(txnIdMap));
+            threads.emplace_back(runTransaction, txnNum, ops);
         }
 
         // Wait for all threads to complete
@@ -380,7 +362,7 @@ int main(int argc, char *argv[])
         }
 
         // Wait a bit to ensure deadlock detection has run
-        std::this_thread::sleep_for(std::chrono::milliseconds(detectionIntervalMs * 2));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100 * 2));
 
         // Display final test results and system state
         SYNCHRONIZED_COUT("Test completed. Final system state:");

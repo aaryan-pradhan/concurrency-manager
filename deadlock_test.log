@@ -1,0 +1,688 @@
+
+==================== New Log Session ====================
+2025-04-11 21:51:04.915 [INFO] Logging started
+2025-04-11 21:51:04.915 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:04.915 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:04.915 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:04.915 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:04.915 [INFO] Deadlock detection thread started
+2025-04-11 21:51:04.919 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:04.919 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:04.919 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:04.919 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:04.919 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:04.919 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:04.919 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:04.920 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:04.920 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:04.920 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:04.920 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:04.920 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:05.018 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:05.018 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:05.018 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:05.018 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:05.018 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:05.018 [INFO] T2 released lock on R1002
+2025-04-11 21:51:05.018 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:05.018 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:05.018 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:05.018 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:05.018 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:05.018 [INFO] T1 released lock on R1001
+2025-04-11 21:51:05.018 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:05.018 [INFO] T1 released lock on R1002
+2025-04-11 21:51:05.018 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:05.219 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:05.219 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:05.219 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:05.219 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:05.219 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:05.219 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 21:51:06.133 [INFO] Logging started
+2025-04-11 21:51:06.133 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:06.134 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:06.134 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:06.134 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:06.134 [INFO] Deadlock detection thread started
+2025-04-11 21:51:06.138 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:06.138 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:06.138 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:06.138 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:06.138 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:06.138 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:06.138 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:06.138 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:06.138 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:06.138 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:06.138 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:06.138 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:06.239 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:06.239 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:06.239 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:06.239 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:06.239 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:06.239 [INFO] T2 released lock on R1002
+2025-04-11 21:51:06.239 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:06.239 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:06.239 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:06.239 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:06.240 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:06.240 [INFO] T1 released lock on R1001
+2025-04-11 21:51:06.240 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:06.240 [INFO] T1 released lock on R1002
+2025-04-11 21:51:06.240 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:06.440 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:06.441 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:06.441 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:06.441 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:06.441 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:06.441 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 21:51:07.091 [INFO] Logging started
+2025-04-11 21:51:07.091 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:07.091 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:07.091 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:07.091 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:07.093 [INFO] Deadlock detection thread started
+2025-04-11 21:51:07.095 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:07.095 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:07.095 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:07.095 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:07.095 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:07.095 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:07.095 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:07.095 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:07.095 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:07.095 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:07.095 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:07.095 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:07.198 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:07.198 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:07.198 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:07.198 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:07.198 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:07.198 [INFO] T2 released lock on R1002
+2025-04-11 21:51:07.199 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:07.199 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:07.199 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:07.199 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:07.199 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:07.199 [INFO] T1 released lock on R1001
+2025-04-11 21:51:07.199 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:07.199 [INFO] T1 released lock on R1002
+2025-04-11 21:51:07.199 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:07.400 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:07.400 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:07.400 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:07.400 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:07.400 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:07.400 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 21:51:08.041 [INFO] Logging started
+2025-04-11 21:51:08.041 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:08.041 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:08.041 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:08.041 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:08.041 [INFO] Deadlock detection thread started
+2025-04-11 21:51:08.046 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:08.046 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:08.046 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:08.046 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:08.046 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:08.046 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:08.047 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:08.047 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:08.047 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:08.047 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:08.047 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:08.047 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:08.147 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:08.147 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:08.147 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:08.147 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:08.147 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:08.147 [INFO] T2 released lock on R1002
+2025-04-11 21:51:08.147 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:08.147 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:08.147 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:08.147 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:08.148 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:08.148 [INFO] T1 released lock on R1001
+2025-04-11 21:51:08.148 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:08.148 [INFO] T1 released lock on R1002
+2025-04-11 21:51:08.148 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:08.348 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:08.349 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:08.349 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:08.349 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:08.349 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:08.349 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 21:51:08.933 [INFO] Logging started
+2025-04-11 21:51:08.933 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:08.934 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:08.934 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:08.934 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:08.934 [INFO] Deadlock detection thread started
+2025-04-11 21:51:08.938 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:08.938 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:08.938 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:08.938 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:08.938 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:08.938 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:08.938 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:08.938 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:08.938 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:08.938 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:08.938 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:08.938 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:09.039 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:09.039 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:09.039 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:09.039 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:09.039 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:09.039 [INFO] T2 released lock on R1002
+2025-04-11 21:51:09.040 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:09.040 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:09.040 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:09.040 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:09.040 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:09.040 [INFO] T1 released lock on R1001
+2025-04-11 21:51:09.040 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:09.040 [INFO] T1 released lock on R1002
+2025-04-11 21:51:09.040 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:09.241 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:09.241 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:09.241 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:09.242 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:09.242 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:09.242 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 21:51:10.842 [INFO] Logging started
+2025-04-11 21:51:10.842 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:10.843 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:10.843 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:10.843 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:10.843 [INFO] Deadlock detection thread started
+2025-04-11 21:51:10.846 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:10.846 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:10.846 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:10.846 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:10.846 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:10.846 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:10.846 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:10.846 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:10.846 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:10.846 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:10.846 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:10.846 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:10.948 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:10.948 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:10.948 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:10.948 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:10.948 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:10.948 [INFO] T2 released lock on R1002
+2025-04-11 21:51:10.948 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:10.948 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:10.948 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:10.948 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:10.948 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:10.949 [INFO] T1 released lock on R1001
+2025-04-11 21:51:10.949 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:10.949 [INFO] T1 released lock on R1002
+2025-04-11 21:51:10.949 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:11.149 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:11.150 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:11.150 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:11.150 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:11.150 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:11.150 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 21:51:18.218 [INFO] Logging started
+2025-04-11 21:51:18.218 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:18.218 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:18.218 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:18.218 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:18.218 [INFO] Deadlock detection thread started
+2025-04-11 21:51:18.224 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:18.224 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:18.224 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:18.224 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:18.224 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:18.225 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:18.225 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:18.225 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:18.225 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:18.225 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:18.225 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:18.225 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:18.322 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:18.323 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:18.323 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:18.323 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:18.323 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:18.323 [INFO] T2 released lock on R1002
+2025-04-11 21:51:18.323 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:18.323 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:18.323 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:18.323 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:18.323 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:18.323 [INFO] T1 released lock on R1001
+2025-04-11 21:51:18.323 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:18.323 [INFO] T1 released lock on R1002
+2025-04-11 21:51:18.323 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:18.523 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:18.524 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:18.524 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:18.524 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:18.524 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:18.525 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 21:51:19.205 [INFO] Logging started
+2025-04-11 21:51:19.205 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:19.206 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:19.206 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:19.206 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:19.206 [INFO] Deadlock detection thread started
+2025-04-11 21:51:19.210 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:19.210 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:19.210 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:19.210 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:19.210 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:19.210 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:19.210 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:19.210 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:19.210 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:19.210 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:19.211 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:19.211 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:19.311 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:19.311 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:19.311 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:19.311 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:19.311 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:19.311 [INFO] T2 released lock on R1002
+2025-04-11 21:51:19.311 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:19.312 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:19.312 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:19.312 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:19.312 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:19.312 [INFO] T1 released lock on R1001
+2025-04-11 21:51:19.312 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:19.312 [INFO] T1 released lock on R1002
+2025-04-11 21:51:19.312 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:19.513 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:19.513 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:19.513 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:19.513 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:19.513 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:19.514 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 21:51:21.776 [INFO] Logging started
+2025-04-11 21:51:21.776 [INFO] Resource Allocation Graph initialized
+2025-04-11 21:51:21.776 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 21:51:21.776 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 21:51:21.776 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 21:51:21.776 [INFO] Deadlock detection thread started
+2025-04-11 21:51:21.780 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 21:51:21.781 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 21:51:21.781 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:21.781 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:21.781 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 21:51:21.781 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:21.781 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 21:51:21.781 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 21:51:21.781 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:21.781 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 21:51:21.781 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:21.781 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 21:51:21.882 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 21:51:21.882 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 21:51:21.882 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 21:51:21.882 [INFO] T2 removed from global waiting set
+2025-04-11 21:51:21.882 [INFO] T2 released lock on resource R1002
+2025-04-11 21:51:21.882 [INFO] T2 released lock on R1002
+2025-04-11 21:51:21.882 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 21:51:21.882 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 21:51:21.882 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 21:51:21.883 [INFO] Transaction T1 committed successfully
+2025-04-11 21:51:21.883 [INFO] T1 released lock on resource R1001
+2025-04-11 21:51:21.883 [INFO] T1 released lock on R1001
+2025-04-11 21:51:21.883 [INFO] T1 released lock on resource R1002
+2025-04-11 21:51:21.883 [INFO] T1 released lock on R1002
+2025-04-11 21:51:21.883 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 21:51:22.083 [INFO] Deadlock Detector shutting down
+2025-04-11 21:51:22.084 [INFO] Deadlock detection thread stopping
+2025-04-11 21:51:22.084 [INFO] Deadlock Detector thread terminated
+2025-04-11 21:51:22.084 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 21:51:22.084 [INFO] Concurrency Manager shut down
+2025-04-11 21:51:22.094 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 23:01:16.256 [INFO] Logging started
+2025-04-11 23:01:16.256 [INFO] Resource Allocation Graph initialized
+
+==================== New Log Session ====================
+2025-04-11 23:01:59.557 [INFO] Logging started
+2025-04-11 23:01:59.557 [INFO] Resource Allocation Graph initialized
+
+==================== New Log Session ====================
+2025-04-11 23:02:56.824 [INFO] Logging started
+2025-04-11 23:02:56.824 [INFO] Resource Allocation Graph initialized
+
+==================== New Log Session ====================
+2025-04-11 23:08:22.308 [INFO] Logging started
+2025-04-11 23:08:22.308 [INFO] Resource Allocation Graph initialized
+
+==================== New Log Session ====================
+2025-04-11 23:08:39.620 [INFO] Logging started
+2025-04-11 23:08:39.620 [INFO] Resource Allocation Graph initialized
+
+==================== New Log Session ====================
+2025-04-11 23:11:44.336 [INFO] Logging started
+2025-04-11 23:11:44.336 [INFO] Resource Allocation Graph initialized
+
+==================== New Log Session ====================
+2025-04-11 23:13:47.147 [INFO] Logging started
+2025-04-11 23:13:47.147 [INFO] Resource Allocation Graph initialized
+
+==================== New Log Session ====================
+2025-04-11 23:15:50.359 [INFO] Logging started
+2025-04-11 23:15:50.359 [INFO] Resource Allocation Graph initialized
+
+==================== New Log Session ====================
+2025-04-11 23:35:09.224 [INFO] Logging started
+2025-04-11 23:35:09.224 [INFO] Resource Allocation Graph initialized
+2025-04-11 23:35:09.224 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 23:35:09.224 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 23:35:09.224 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 23:35:09.224 [INFO] Deadlock detection thread started
+2025-04-11 23:35:09.227 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 23:35:09.227 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 23:35:09.228 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:09.228 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 23:35:09.228 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:09.228 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:09.228 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:09.228 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:09.228 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:09.228 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:09.228 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:09.228 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:09.327 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 23:35:09.327 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 23:35:09.327 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 23:35:09.327 [INFO] T2 removed from global waiting set
+2025-04-11 23:35:09.327 [INFO] T2 released lock on resource R1002
+2025-04-11 23:35:09.327 [INFO] T2 released lock on R1002
+2025-04-11 23:35:09.327 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:09.327 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 23:35:09.327 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 23:35:09.327 [INFO] Transaction T1 committed successfully
+2025-04-11 23:35:09.328 [INFO] T1 released lock on resource R1001
+2025-04-11 23:35:09.328 [INFO] T1 released lock on R1001
+2025-04-11 23:35:09.328 [INFO] T1 released lock on resource R1002
+2025-04-11 23:35:09.328 [INFO] T1 released lock on R1002
+2025-04-11 23:35:09.328 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 23:35:09.528 [INFO] Deadlock Detector shutting down
+2025-04-11 23:35:09.528 [INFO] Deadlock detection thread stopping
+2025-04-11 23:35:09.528 [INFO] Deadlock Detector thread terminated
+2025-04-11 23:35:09.528 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 23:35:09.528 [INFO] Concurrency Manager shut down
+2025-04-11 23:35:09.528 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 23:35:26.247 [INFO] Logging started
+2025-04-11 23:35:26.247 [INFO] Resource Allocation Graph initialized
+2025-04-11 23:35:26.247 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 23:35:26.247 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 23:35:26.247 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 23:35:26.247 [INFO] Deadlock detection thread started
+2025-04-11 23:35:26.250 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 23:35:26.250 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 23:35:26.250 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:26.250 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:26.250 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 23:35:26.250 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:26.250 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:26.250 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:26.250 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:26.250 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:26.250 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:26.250 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:26.350 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 23:35:26.350 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 23:35:26.350 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 23:35:26.350 [INFO] T2 removed from global waiting set
+2025-04-11 23:35:26.350 [INFO] T2 released lock on resource R1002
+2025-04-11 23:35:26.350 [INFO] T2 released lock on R1002
+2025-04-11 23:35:26.350 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:26.350 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 23:35:26.350 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 23:35:26.351 [INFO] Transaction T1 committed successfully
+2025-04-11 23:35:26.351 [INFO] T1 released lock on resource R1001
+2025-04-11 23:35:26.351 [INFO] T1 released lock on R1001
+2025-04-11 23:35:26.351 [INFO] T1 released lock on resource R1002
+2025-04-11 23:35:26.351 [INFO] T1 released lock on R1002
+2025-04-11 23:35:26.351 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 23:35:26.551 [INFO] Deadlock Detector shutting down
+2025-04-11 23:35:26.552 [INFO] Deadlock detection thread stopping
+2025-04-11 23:35:26.552 [INFO] Deadlock Detector thread terminated
+2025-04-11 23:35:26.552 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 23:35:26.552 [INFO] Concurrency Manager shut down
+2025-04-11 23:35:26.552 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 23:35:52.577 [INFO] Logging started
+2025-04-11 23:35:52.577 [INFO] Resource Allocation Graph initialized
+2025-04-11 23:35:52.577 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 23:35:52.577 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 23:35:52.577 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 23:35:52.577 [INFO] Deadlock detection thread started
+2025-04-11 23:35:52.581 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 23:35:52.582 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 23:35:52.582 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:52.582 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 23:35:52.582 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:52.582 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:52.582 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:52.582 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:52.582 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:52.582 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:52.582 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:52.582 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:52.681 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 23:35:52.682 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 23:35:52.682 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 23:35:52.682 [INFO] T2 removed from global waiting set
+2025-04-11 23:35:52.682 [INFO] T2 released lock on resource R1002
+2025-04-11 23:35:52.682 [INFO] T2 released lock on R1002
+2025-04-11 23:35:52.682 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:52.682 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 23:35:52.682 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 23:35:52.682 [INFO] Transaction T1 committed successfully
+2025-04-11 23:35:52.682 [INFO] T1 released lock on resource R1001
+2025-04-11 23:35:52.682 [INFO] T1 released lock on R1001
+2025-04-11 23:35:52.682 [INFO] T1 released lock on resource R1002
+2025-04-11 23:35:52.682 [INFO] T1 released lock on R1002
+2025-04-11 23:35:52.682 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 23:35:52.883 [INFO] Deadlock Detector shutting down
+2025-04-11 23:35:52.883 [INFO] Deadlock detection thread stopping
+2025-04-11 23:35:52.883 [INFO] Deadlock Detector thread terminated
+2025-04-11 23:35:52.883 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 23:35:52.883 [INFO] Concurrency Manager shut down
+2025-04-11 23:35:52.883 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 23:35:54.287 [INFO] Logging started
+2025-04-11 23:35:54.287 [INFO] Resource Allocation Graph initialized
+2025-04-11 23:35:54.287 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 23:35:54.287 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 23:35:54.287 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 23:35:54.287 [INFO] Deadlock detection thread started
+2025-04-11 23:35:54.292 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 23:35:54.292 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 23:35:54.292 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:54.292 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 23:35:54.292 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:54.292 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:54.292 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:54.292 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:54.292 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:54.292 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:54.292 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:54.292 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:54.391 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 23:35:54.391 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 23:35:54.391 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 23:35:54.391 [INFO] T2 removed from global waiting set
+2025-04-11 23:35:54.391 [INFO] T2 released lock on resource R1002
+2025-04-11 23:35:54.391 [INFO] T2 released lock on R1002
+2025-04-11 23:35:54.391 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:54.391 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 23:35:54.391 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 23:35:54.391 [INFO] Transaction T1 committed successfully
+2025-04-11 23:35:54.391 [INFO] T1 released lock on resource R1001
+2025-04-11 23:35:54.391 [INFO] T1 released lock on R1001
+2025-04-11 23:35:54.391 [INFO] T1 released lock on resource R1002
+2025-04-11 23:35:54.392 [INFO] T1 released lock on R1002
+2025-04-11 23:35:54.392 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 23:35:54.592 [INFO] Deadlock Detector shutting down
+2025-04-11 23:35:54.593 [INFO] Deadlock detection thread stopping
+2025-04-11 23:35:54.593 [INFO] Deadlock Detector thread terminated
+2025-04-11 23:35:54.593 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 23:35:54.593 [INFO] Concurrency Manager shut down
+2025-04-11 23:35:54.593 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 23:35:55.830 [INFO] Logging started
+2025-04-11 23:35:55.830 [INFO] Resource Allocation Graph initialized
+2025-04-11 23:35:55.830 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 23:35:55.830 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 23:35:55.830 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 23:35:55.830 [INFO] Deadlock detection thread started
+2025-04-11 23:35:55.836 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 23:35:55.836 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 23:35:55.836 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:55.836 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:55.836 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 23:35:55.836 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:55.836 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:55.836 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:55.836 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:55.836 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:55.837 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:55.837 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:55.934 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 23:35:55.934 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 23:35:55.934 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 23:35:55.934 [INFO] T2 removed from global waiting set
+2025-04-11 23:35:55.934 [INFO] T2 released lock on resource R1002
+2025-04-11 23:35:55.934 [INFO] T2 released lock on R1002
+2025-04-11 23:35:55.934 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:55.934 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 23:35:55.934 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 23:35:55.934 [INFO] Transaction T1 committed successfully
+2025-04-11 23:35:55.934 [INFO] T1 released lock on resource R1001
+2025-04-11 23:35:55.935 [INFO] T1 released lock on R1001
+2025-04-11 23:35:55.935 [INFO] T1 released lock on resource R1002
+2025-04-11 23:35:55.935 [INFO] T1 released lock on R1002
+2025-04-11 23:35:55.935 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 23:35:56.136 [INFO] Deadlock Detector shutting down
+2025-04-11 23:35:56.136 [INFO] Deadlock detection thread stopping
+2025-04-11 23:35:56.136 [INFO] Deadlock Detector thread terminated
+2025-04-11 23:35:56.136 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 23:35:56.136 [INFO] Concurrency Manager shut down
+2025-04-11 23:35:56.136 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 23:35:56.847 [INFO] Logging started
+2025-04-11 23:35:56.848 [INFO] Resource Allocation Graph initialized
+2025-04-11 23:35:56.848 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 23:35:56.848 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 23:35:56.848 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 23:35:56.848 [INFO] Deadlock detection thread started
+2025-04-11 23:35:56.850 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 23:35:56.850 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 23:35:56.850 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:56.850 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 23:35:56.850 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:56.851 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:56.851 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:56.851 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:56.851 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:56.851 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:56.851 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:56.851 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:56.950 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 23:35:56.950 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 23:35:56.950 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 23:35:56.950 [INFO] T2 removed from global waiting set
+2025-04-11 23:35:56.950 [INFO] T2 released lock on resource R1002
+2025-04-11 23:35:56.950 [INFO] T2 released lock on R1002
+2025-04-11 23:35:56.950 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:56.950 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 23:35:56.950 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 23:35:56.950 [INFO] Transaction T1 committed successfully
+2025-04-11 23:35:56.950 [INFO] T1 released lock on resource R1001
+2025-04-11 23:35:56.950 [INFO] T1 released lock on R1001
+2025-04-11 23:35:56.950 [INFO] T1 released lock on resource R1002
+2025-04-11 23:35:56.950 [INFO] T1 released lock on R1002
+2025-04-11 23:35:56.950 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 23:35:57.151 [INFO] Deadlock Detector shutting down
+2025-04-11 23:35:57.151 [INFO] Deadlock detection thread stopping
+2025-04-11 23:35:57.151 [INFO] Deadlock Detector thread terminated
+2025-04-11 23:35:57.152 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 23:35:57.152 [INFO] Concurrency Manager shut down
+2025-04-11 23:35:57.152 [INFO] Logging ended
+
+==================== New Log Session ====================
+2025-04-11 23:35:57.898 [INFO] Logging started
+2025-04-11 23:35:57.898 [INFO] Resource Allocation Graph initialized
+2025-04-11 23:35:57.898 [INFO] Deadlock Detector initialized with detection interval: 100ms
+2025-04-11 23:35:57.898 [INFO] Concurrency Manager initialized with Two-Phase Locking protocol and RAG
+2025-04-11 23:35:57.898 [INFO] Concurrency Manager initialized with deadlock detection interval: 100ms
+2025-04-11 23:35:57.898 [INFO] Deadlock detection thread started
+2025-04-11 23:35:57.904 [INFO] Transaction T1 began with metadata: Transaction 1
+2025-04-11 23:35:57.904 [INFO] Transaction T2 began with metadata: Transaction 2
+2025-04-11 23:35:57.904 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:57.904 [INFO] T1 acquired EXCLUSIVE lock on R1001
+2025-04-11 23:35:57.904 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:57.904 [INFO] T1 attempting to acquire EXCLUSIVE lock on R1002
+2025-04-11 23:35:57.904 [INFO] T2 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:57.904 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:57.904 [INFO] T1 waiting for lock on R1002 held by T2
+2025-04-11 23:35:57.904 [INFO] T2 attempting to acquire EXCLUSIVE lock on R1001
+2025-04-11 23:35:57.904 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:57.904 [INFO] T2 waiting for lock on R1001 held by T1
+2025-04-11 23:35:58.002 [INFO] Deadlock cycle detected, youngest transaction: T2
+2025-04-11 23:35:58.002 [WARNING] Aborting transaction T2 to break deadlock cycle
+2025-04-11 23:35:58.002 [INFO] T2 removed from waiting queue for resource R1001
+2025-04-11 23:35:58.002 [INFO] T2 removed from global waiting set
+2025-04-11 23:35:58.002 [INFO] T2 released lock on resource R1002
+2025-04-11 23:35:58.002 [INFO] T2 released lock on R1002
+2025-04-11 23:35:58.002 [INFO] T1 acquired EXCLUSIVE lock on R1002
+2025-04-11 23:35:58.002 [INFO] Released all 1 locks held by transaction T2
+2025-04-11 23:35:58.002 [INFO] Deadlock detection resolved 1 cycle(s)
+2025-04-11 23:35:58.002 [INFO] Transaction T1 committed successfully
+2025-04-11 23:35:58.002 [INFO] T1 released lock on resource R1001
+2025-04-11 23:35:58.002 [INFO] T1 released lock on R1001
+2025-04-11 23:35:58.002 [INFO] T1 released lock on resource R1002
+2025-04-11 23:35:58.002 [INFO] T1 released lock on R1002
+2025-04-11 23:35:58.002 [INFO] Released all 2 locks held by transaction T1
+2025-04-11 23:35:58.203 [INFO] Deadlock Detector shutting down
+2025-04-11 23:35:58.203 [INFO] Deadlock detection thread stopping
+2025-04-11 23:35:58.204 [INFO] Deadlock Detector thread terminated
+2025-04-11 23:35:58.204 [INFO] Transaction T2 aborted: System shutdown
+2025-04-11 23:35:58.204 [INFO] Concurrency Manager shut down
+2025-04-11 23:35:58.204 [INFO] Logging ended
