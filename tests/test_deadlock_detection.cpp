@@ -9,10 +9,13 @@
 #include <condition_variable>
 #include <atomic>
 #include <chrono>
+#include <barrier>
 #include "../include/concurrency_manager.h"
 
 // Maps data items to resource IDs
 std::map<std::string, int> dataItemToResourceId;
+
+int cnt = 1;
 
 // Get or create resource ID for a data item
 int getResourceId(const std::string &dataItem)
@@ -20,7 +23,7 @@ int getResourceId(const std::string &dataItem)
     if (dataItemToResourceId.find(dataItem) == dataItemToResourceId.end())
     {
         // Create a new resource ID starting from 1001
-        dataItemToResourceId[dataItem] = 1001 + dataItemToResourceId.size();
+        dataItemToResourceId[dataItem] = cnt++;
     }
     return dataItemToResourceId[dataItem];
 }
@@ -87,21 +90,25 @@ std::atomic<int> activeThreads(0);
 std::atomic<bool> deadlockDetected(false);
 
 // Add this helper function to log RAG state
-void logRAGState(ConcurrencyManager &cm, int txnNum, const std::string &operation) {
+void logRAGState(ConcurrencyManager &cm, int txnNum, const std::string &operation)
+{
     SYNCHRONIZED_COUT("\n--- RAG STATE AFTER T" << txnNum << " " << operation << " ---");
     SYNCHRONIZED_COUT(cm.getResourceAllocationGraph());
     SYNCHRONIZED_COUT("--------------------------------------\n");
-    
+
     // Also log to file for persistent records
     cm.logResourceAllocationGraph("T" + std::to_string(txnNum) + " " + operation);
 }
 
 ConcurrencyManager cm("deadlock_test.log", 100);
+std::shared_ptr<std::barrier<>> startBarrier;
 
 // Run a transaction in its own thread
 void runTransaction(int txnNum, const std::vector<Operation> &operations)
 {
     activeThreads++;
+
+    startBarrier->arrive_and_wait();
 
     int txnId = -1;
     bool wasAborted = false;
@@ -110,8 +117,6 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations)
     {
         for (const auto &op : operations)
         {
-            // Add a small delay between operations for realism
-            // std::this_thread::sleep_for(std::chrono::milliseconds(10 + rand() % 50));
 
             // Handle START operation
             if (op.type == Operation::START)
@@ -286,11 +291,13 @@ std::vector<std::vector<Operation>> parseTestFile(const std::string &filename)
         else if (std::regex_search(line, match, readRe))
         {
             int txnNum = std::stoi(match[1]);
+            std :: cout << match[2].str() << std::endl;
             txnOperations[txnNum].push_back({Operation::READ, txnNum, match[2], lineNum});
         }
         else if (std::regex_search(line, match, writeRe))
         {
             int txnNum = std::stoi(match[1]);
+            std :: cout << match[2].str() << std::endl;
             txnOperations[txnNum].push_back({Operation::WRITE, txnNum, match[2], lineNum});
         }
         else if (std::regex_search(line, match, commitRe))
@@ -340,9 +347,14 @@ int main(int argc, char *argv[])
         // Parse test file
         auto transactionOperations = parseTestFile(testFile);
 
+        int numTransactions = transactionOperations.size();
+
+        // Initialize the barrier with the number of transactions
+        startBarrier = std::make_shared<std::barrier<>>(numTransactions);
+        
         // Create threads for each transaction
         std::vector<std::thread> threads;
-        
+
         for (const auto &ops : transactionOperations)
         {
             if (ops.empty())
