@@ -303,6 +303,24 @@ void writeTransactionMetricsToFile(const std::string& testFile, std::chrono::ste
 ConcurrencyManager cm("deadlock_test.log", 100);
 std::shared_ptr<std::barrier<>> startBarrier;
 
+int calculateBackoff(int retryCount) {
+    // Base backoff in milliseconds
+    int baseBackoff = 20;
+    
+    // Maximum backoff to prevent extremely long waits
+    int maxBackoff = 5000; // 5 seconds
+    
+    // Calculate exponential backoff with some randomization
+    int backoff = std::min(baseBackoff * (1 << retryCount), maxBackoff);
+    
+    // Add jitter (±30%) to prevent thundering herd problem
+    int jitter = (std::rand() % 60) - 30;
+    backoff = backoff * (100 + jitter) / 100;
+    
+    // Ensure backoff is at least 5ms
+    return std::max(backoff, 5);
+}
+
 // Run a transaction in its own thread
 void runTransaction(int txnNum, const std::vector<Operation> &operations, int priority = 1)
 {
@@ -356,7 +374,13 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations, int pr
                     recordTxnRestart(txnNum);
                     i = -1; // Restart from the beginning
                     priority++;
+
+                    int backoff = calculateBackoff(priority);
+
                     logRAGState(cm, txnNum, "was aborted while waiting for lock");
+
+                    // Sleep for backoff time
+                    std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
                     break;
                 }
 
@@ -379,8 +403,14 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations, int pr
                     wasAborted = true;
                     i = -1; // Restart from the beginning
                     priority++;
+
+                    int backoff = calculateBackoff(priority);
+
                     recordTxnRestart(txnNum);
                     logRAGState(cm, txnNum, "was aborted while waiting for lock");
+
+                    // Sleep for backoff time
+                    std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
                     break;
                 }
 
