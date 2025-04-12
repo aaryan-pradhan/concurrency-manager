@@ -50,16 +50,20 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
     
     // Wait indefinitely until the condition is met or the transaction is aborted
     std::unique_lock<std::mutex> lock(mtx);
-    bool success = cv.wait_for(lock, lockTimeout, canAcquireLock);    
+    
+    cv.wait(lock, canAcquireLock);
+    
     // Remove from waiting set
     waitingTransactions.erase(txnId);
     
-    if (!success) {
+    // Check if the transaction was aborted
+    Transaction* txn = Transaction::GetTransaction(txnId);
+    if (txn == nullptr || txn->getState() == TransactionState::ABORTED) {
         // Remove request edge from RAG
         rag.removeRequestEdge(txnId, resourceId);
         
-        logger.warning("T" + std::to_string(txnId) + " timed out waiting for lock on R" + 
-                     std::to_string(resourceId));
+        logger.info("T" + std::to_string(txnId) + " aborted while waiting for lock on R" + 
+                   std::to_string(resourceId));
         
         // Find and remove the request
         if (lockTable.find(resourceId) != lockTable.end()) {
@@ -78,11 +82,6 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
         }
         
         return false;
-    }
-    // Check if the transaction was aborted
-    Transaction* txn = Transaction::GetTransaction(txnId);
-    if (txn == nullptr || txn->getState() == TransactionState::ABORTED) {
-        return false;  // Return false if transaction has been aborted
     }
     
     // Try to grant the lock
@@ -106,7 +105,7 @@ bool LockManager::waitForLock(int txnId, int resourceId, LockType lockType) {
             return true;
         }
     }
-    
+
     return false;
 }
 

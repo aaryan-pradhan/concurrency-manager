@@ -1,11 +1,12 @@
 #include "../include/transaction.h"
 #include <unordered_map>
 
-Transaction::Transaction(int id, const std::string& meta)
+Transaction::Transaction(int id, const std::string& meta,int priority)
     : txnId(id), 
       state(TransactionState::GROWING), 
       startTime(std::chrono::system_clock::now()), 
-      metadata(meta) {
+      metadata(meta),
+      priority(priority) {
     // Register this transaction in the static map
     RegisterTransaction(this);
 }
@@ -127,4 +128,8 @@ Transaction* Transaction::GetTransaction(txn_id_t txn_id) {
         return it->second;
     }
     return nullptr;
+}
+
+int Transaction::getPriority() const {
+    return priority;
 }

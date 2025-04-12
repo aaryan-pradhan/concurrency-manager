@@ -1,0 +1,5 @@
+transaction_metrics.txt
+*.log
+rag_log.txt
+.vscode
+deadlock_test

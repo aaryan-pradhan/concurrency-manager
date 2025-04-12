@@ -79,10 +79,9 @@ void DeadlockDetector::RemoveEdge(txn_id_t t1, txn_id_t t2)
         }
     }
 }
-
 bool DeadlockDetector::DFS(txn_id_t node, std::unordered_map<txn_id_t, bool> &visited,
                            std::unordered_map<txn_id_t, bool> &in_stack,
-                           txn_id_t &youngest_txn)
+                           txn_id_t &min_priority_txn)
 {
     visited[node] = true;
     in_stack[node] = true;
@@ -96,17 +95,30 @@ bool DeadlockDetector::DFS(txn_id_t node, std::unordered_map<txn_id_t, bool> &vi
             // If not visited, recursively explore
             if (!visited[neighbor])
             {
-                if (DFS(neighbor, visited, in_stack, youngest_txn))
+                if (DFS(neighbor, visited, in_stack, min_priority_txn))
                 {
-                    // Update youngest transaction in the cycle if current is younger
-                    youngest_txn = std::max(youngest_txn, node);
+                    // Update min priority transaction if current has lower priority
+                    Transaction *curr_txn = Transaction::GetTransaction(node);
+                    Transaction *min_txn = Transaction::GetTransaction(min_priority_txn);
+
+                    if (curr_txn && min_txn && curr_txn->getPriority() < min_txn->getPriority())
+                    {
+                        min_priority_txn = node;
+                    }
                     return true; // Cycle found
                 }
             }
             // If already in recursion stack, we found a cycle
             else if (in_stack[neighbor])
             {
-                youngest_txn = std::max(youngest_txn, node);
+                // Initialize min priority with current node
+                Transaction *curr_txn = Transaction::GetTransaction(node);
+                Transaction *min_txn = Transaction::GetTransaction(min_priority_txn);
+
+                if (curr_txn && min_txn && curr_txn->getPriority() < min_txn->getPriority())
+                {
+                    min_priority_txn = node;
+                }
 
                 logger_.debug("Cycle found in wait-for graph involving T" +
                               std::to_string(node) + " and T" +
@@ -135,26 +147,110 @@ bool DeadlockDetector::HasCycle(txn_id_t &txn_id)
 
     std::sort(nodes.begin(), nodes.end());
 
+    bool cycle_found = false;
+
     // Start DFS from each unvisited node
     for (const auto &node : nodes)
     {
         if (!visited[node])
         {
-            // Initialize youngest transaction as current node
-            txn_id = node;
+            // Initialize min priority transaction as current node
+            txn_id_t current_min_priority_txn = node;
 
-            if (DFS(node, visited, in_stack, txn_id))
+            if (DFS(node, visited, in_stack, current_min_priority_txn))
             {
-                logger_.info("Deadlock cycle detected, youngest transaction: T" +
-                             std::to_string(txn_id));
-                return true; // Found a cycle
+                // If this is the first cycle, or we found a transaction with lower priority
+                Transaction *curr_min_txn = Transaction::GetTransaction(current_min_priority_txn);
+                Transaction *global_min_txn = Transaction::GetTransaction(txn_id);
+
+                if (!cycle_found || (curr_min_txn && global_min_txn &&
+                                     curr_min_txn->getPriority() < global_min_txn->getPriority()))
+                {
+                    txn_id = current_min_priority_txn;
+                }
+
+                cycle_found = true;
             }
         }
     }
 
-    return false; // No cycles found
+    if (cycle_found)
+    {
+        Transaction *victim = Transaction::GetTransaction(txn_id);
+        if (victim)
+        {
+            logger_.info("Deadlock cycle detected, minimum priority transaction: T" +
+                         std::to_string(txn_id) + " (priority: " +
+                         std::to_string(victim->getPriority()) + ")");
+        }
+    }
+
+    return cycle_found; // True if any cycles found
 }
 
+void DeadlockDetector::RunCycleDetection()
+{
+    // Step 1: Build the wait-for graph
+    BuildWaitForGraph();
+
+    // Step 2: Detect and break all cycles
+    int cyclesFound = 0;
+    while (true)
+    {
+        txn_id_t min_priority_txn;
+
+        // If no cycle found, we're done
+        if (!HasCycle(min_priority_txn))
+        {
+            break;
+        }
+
+        cyclesFound++;
+
+        // Get a pointer to the minimum priority transaction in the cycle
+        Transaction *txn = Transaction::GetTransaction(min_priority_txn);
+
+        // If transaction exists, abort it to break the cycle
+        if (txn != nullptr)
+        {
+            // Log before aborting
+            logger_.warning("Aborting transaction T" + std::to_string(min_priority_txn) +
+                            " (priority: " + std::to_string(txn->getPriority()) +
+                            ") to break deadlock cycle");
+
+            // Set the transaction's state to ABORTED
+            txn->abort();
+
+            // Release all locks held by the aborted transaction
+            lock_manager_.releaseAllLocks(min_priority_txn);
+
+            // Remove the aborted transaction from the graph
+            {
+                std::lock_guard<std::mutex> lock(graph_mutex_);
+
+                // Remove it as a source node
+                wait_for_graph_.erase(min_priority_txn);
+
+                // Remove any edges to this transaction
+                for (auto &[_, edges] : wait_for_graph_)
+                {
+                    edges.erase(std::remove(edges.begin(), edges.end(), min_priority_txn), edges.end());
+                }
+            }
+        }
+        else
+        {
+            logger_.error("Failed to find transaction T" + std::to_string(min_priority_txn) +
+                          " to abort for deadlock resolution");
+        }
+    }
+
+    if (cyclesFound > 0)
+    {
+        logger_.info("Deadlock detection resolved " + std::to_string(cyclesFound) +
+                     " cycle(s)");
+    }
+}
 std::vector<std::pair<txn_id_t, txn_id_t>> DeadlockDetector::GetEdgeList()
 {
     std::lock_guard<std::mutex> lock(graph_mutex_);
@@ -258,69 +354,6 @@ void DeadlockDetector::BuildWaitForGraph()
     if (!graph_summary.empty())
     {
         logger_.debug("Wait-for graph:\n" + graph_summary);
-    }
-}
-
-void DeadlockDetector::RunCycleDetection()
-{
-    // Step 1: Build the wait-for graph
-    BuildWaitForGraph();
-
-    // Step 2: Detect and break all cycles
-    int cyclesFound = 0;
-    while (true)
-    {
-        txn_id_t youngest_txn;
-
-        // If no cycle found, we're done
-        if (!HasCycle(youngest_txn))
-        {
-            break;
-        }
-
-        cyclesFound++;
-
-        // Get a pointer to the youngest transaction in the cycle
-        Transaction *txn = Transaction::GetTransaction(youngest_txn);
-
-        // If transaction exists, abort it to break the cycle
-        if (txn != nullptr)
-        {
-            // Log before aborting
-            logger_.warning("Aborting transaction T" + std::to_string(youngest_txn) +
-                            " to break deadlock cycle");
-
-            // Set the transaction's state to ABORTED
-            txn->abort();
-
-            // CRITICAL FIX: Release all locks held by the aborted transaction
-            lock_manager_.releaseAllLocks(youngest_txn);
-
-            // Remove the aborted transaction from the graph
-            {
-                std::lock_guard<std::mutex> lock(graph_mutex_);
-
-                // Remove it as a source node
-                wait_for_graph_.erase(youngest_txn);
-
-                // Remove any edges to this transaction
-                for (auto &[_, edges] : wait_for_graph_)
-                {
-                    edges.erase(std::remove(edges.begin(), edges.end(), youngest_txn), edges.end());
-                }
-            }
-        }
-        else
-        {
-            logger_.error("Failed to find transaction T" + std::to_string(youngest_txn) +
-                          " to abort for deadlock resolution");
-        }
-    }
-
-    if (cyclesFound > 0)
-    {
-        logger_.info("Deadlock detection resolved " + std::to_string(cyclesFound) +
-                     " cycle(s)");
     }
 }
 

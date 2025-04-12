@@ -33,6 +33,7 @@ private:
     std::set<int> locksHeld;                         // Set of resource IDs for which this transaction holds locks
     std::chrono::system_clock::time_point startTime; // Transaction start timestamp
     std::string metadata;                            // Optional transaction metadata
+    int priority;                                    // Transaction priority for deadlock resolution
 
 public:
     /**
@@ -40,7 +41,7 @@ public:
      * @param id Unique identifier for this transaction
      * @param meta Optional metadata for this transaction
      */
-    Transaction(int id, const std::string &meta = "");
+    Transaction(int id, const std::string &meta = "", int priority = 1);
 
     /**
      * @brief Destructor - unregisters the transaction from the static map
@@ -138,4 +139,10 @@ public:
 
     // Get a transaction by ID
     static Transaction *GetTransaction(txn_id_t txn_id);
+
+    /**
+     * @brief Gets the transaction priority
+     * @return Transaction priority value
+     */
+    int getPriority() const;
 };

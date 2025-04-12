@@ -49,7 +49,7 @@ public:
     
     /**
      * Looks for a cycle using DFS algorithm.
-     * If it finds a cycle, stores the transaction id of the youngest 
+     * If it finds a cycle, stores the transaction id of the minimum priority 
      * transaction in the cycle in txn_id and returns true.
      * Returns false if no cycle exists.
      */
@@ -64,7 +64,7 @@ public:
     /**
      * Runs cycle detection in the background.
      * Builds the wait-for graph on the fly and breaks any cycles
-     * by aborting the youngest transaction in each cycle.
+     * by aborting the minimum priority transaction in each cycle.
      */
     void RunCycleDetection();
 
@@ -81,7 +81,7 @@ private:
     // Helper method for DFS cycle detection
     bool DFS(txn_id_t node, std::unordered_map<txn_id_t, bool>& visited,
              std::unordered_map<txn_id_t, bool>& in_stack, 
-             txn_id_t& youngest_txn);
+             txn_id_t& min_priority_txn);
     
     // Builds a wait-for graph on the fly
     void BuildWaitForGraph();
