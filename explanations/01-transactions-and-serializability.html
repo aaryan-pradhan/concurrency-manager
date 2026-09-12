@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Prerequisite 1: Transactions and serializability · Concurrency Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Prerequisite 1 · Transactions</span></div>
+    <span class="stage-tag">Prerequisite 1</span>
+    <h1 class="title">Transactions, schedules and serializability</h1>
+    <p class="dek">What a database transaction is, what can go wrong when two of them overlap, and the precise test (an acyclic precedence graph) that decides whether an overlapping run is still correct. Every later page measures the project against this test.</p>
+  </header>
+  <main>
+
+    <div class="recap"><span class="box-label">Uses</span>nothing. This is the first page.</div>
+
+    <section>
+      <div class="spec-quote">
+        <span class="box-label">docs/02-databases-and-transactions.md</span>
+        <blockquote>"Isolation — transactions running at the same time don't interfere with each other, even though they're physically overlapping. This project is entirely about Isolation. […] There's no actual data being read or written — the simulation only cares about the locking behavior, not the values."</blockquote>
+      </div>
+      <p>Two phrases set the scope of this page. "Isolation" is one letter of ACID (section 2), and its formal meaning is <em>serializability</em> (sections 5–7). "No actual data" means the project never stores a value, so everything below is about the <em>order</em> in which transactions touch items, not about what they compute.</p>
+    </section>
+
+    <section>
+      <h2 id="s1">1. Transactions and their operations</h2>
+      <p>A <em class="term">transaction</em> is a sequence of reads and writes on data items that the system treats as one unit: either all of its effects happen or none do. We write its operations in a compact notation used in every database textbook:</p>
+      <div class="eq">
+        \[ r_i(x) \quad w_i(x) \quad c_i \quad a_i \]
+        <p class="note">\(r_i(x)\) means transaction \(T_i\) reads item \(x\). \(w_i(x)\) means \(T_i\) writes \(x\). \(c_i\) is its <em class="term">commit</em> (its effects become permanent) and \(a_i\) its <em class="term">abort</em> (its effects are undone). An <em class="term">item</em> is any named unit of data: a row, a page, or in this project just a letter such as <code>N</code>.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · a transfer</span>
+        <p>Moving 100 from account A to account B is one transaction \(T_1\): \(r_1(A)\,w_1(A)\,r_1(B)\,w_1(B)\,c_1\). If the system crashed after \(w_1(A)\) but before \(w_1(B)\), 100 would vanish. Treating the four operations as one unit is what prevents that.</p>
+      </div>
+      <p>The project's test files use the same idea with different spelling: <code>R314(N)</code> is \(r_{314}(N)\), <code>W314(N)</code> is \(w_{314}(N)\) and <code>C314</code> is \(c_{314}\).</p>
+    </section>
+
+    <section>
+      <h2 id="s2">2. ACID, and which letters this project touches</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Letter</th><th>Property</th><th>Usual mechanism in a real DBMS</th></tr></thead>
+        <tbody>
+          <tr><td>A</td><td><em class="term">Atomicity</em>: all of a transaction's writes happen, or none do</td><td>undo log / rollback of written values</td></tr>
+          <tr><td>C</td><td><em class="term">Consistency</em>: each transaction takes the data from one valid state to another</td><td>constraints plus the application's own logic</td></tr>
+          <tr><td>I</td><td><em class="term">Isolation</em>: concurrent transactions behave as if they ran one at a time</td><td>concurrency control, e.g. locking</td></tr>
+          <tr><td>D</td><td><em class="term">Durability</em>: committed effects survive a crash</td><td>write-ahead log flushed to disk</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="callout impl">
+        <span class="box-label">In the code · isolation only</span>
+        <p>The project stores no values, keeps no undo log and writes nothing that recovery could replay (the <code>.log</code> files are human-readable traces). "Abort" in the code releases locks and marks the transaction <code>ABORTED</code>. There are no writes to roll back. So the project implements the <strong>I</strong> of ACID, at the level of lock scheduling. The docs say so directly: "This project does not deal with durability at all — everything is in memory."</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s3">3. Schedules</h2>
+      <p>When several transactions run at once, their operations interleave. A <em class="term">schedule</em> is the single time-ordered list of all operations from all transactions, keeping each transaction's own operations in their original order. A <em class="term">serial schedule</em> runs whole transactions back to back with no interleaving.</p>
+      <div class="eq">
+        \[ \#\{\text{serial schedules of } n \text{ transactions}\} = n! \]
+        <p class="note">Each serial schedule is an ordering of the \(n\) transactions. Serial schedules are correct by definition if each transaction is correct on its own, but they use one transaction's worth of work at a time.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example</span>
+        <p>With \(n = 3\): \(3! = 3 \times 2 \times 1 = 6\) serial orders (123, 132, 213, 231, 312, 321). With \(n = 10\): \(10! = 3{,}628{,}800\). The project's large test files have \(n = 1{,}000\), so "is this schedule equivalent to <em>some</em> serial order?" can't be answered by trying the orders one by one. Section 7 gives a test that runs in linear time.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s4">4. What goes wrong without control: the anomalies</h2>
+      <p>If the system allows any interleaving, some schedules produce results that no serial schedule could. The three classic ones:</p>
+      <ul>
+        <li><em class="term">Lost update</em>: two transactions read the same value, both write a new value computed from it, and the second write silently overwrites the first.</li>
+        <li><em class="term">Dirty read</em>: a transaction reads a value written by another transaction that later aborts, so it acted on data that never officially existed.</li>
+        <li><em class="term">Unrepeatable read</em>: a transaction reads the same item twice and sees two different committed values because another transaction wrote in between.</li>
+      </ul>
+      <div class="worked">
+        <span class="box-label">Worked example · lost update</span>
+        <p>Stock count \(x = 10\). \(T_1\) sells 3, \(T_2\) sells 4.</p>
+        <p class="sched">r₁(x)=10 &nbsp; r₂(x)=10 &nbsp; w₁(x)=10−3=7 &nbsp; w₂(x)=10−4=6 &nbsp; c₁ &nbsp; c₂</p>
+        <p>Final \(x = 6\). Both serial orders give \(10 - 3 - 4 = 3\). Three units of sales were lost because \(T_2\) computed its write from a value that \(T_1\) had already made stale.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s5">5. Conflicting operations</h2>
+      <p>Whether swapping two adjacent operations can change the outcome depends only on three facts about them. Two operations <em class="term">conflict</em> when all three hold:</p>
+      <div class="eq">
+        \[ \text{conflict}(o_i, o_j) \iff i \ne j \;\wedge\; \text{item}(o_i) = \text{item}(o_j) \;\wedge\; \big(o_i \text{ is a write} \,\vee\, o_j \text{ is a write}\big) \]
+        <p class="note">Different transactions, same item, and at least one of the two is a write. Two reads of the same item never conflict, because reading changes nothing.</p>
+      </div>
+      <div class="tbl-wrap">
+      <table>
+        <caption>Do these two operations on the same item conflict?</caption>
+        <thead><tr><th></th><th>\(r_j(x)\)</th><th>\(w_j(x)\)</th></tr></thead>
+        <tbody>
+          <tr><td>\(r_i(x)\)</td><td>no</td><td>yes</td></tr>
+          <tr><td>\(w_i(x)\)</td><td>yes</td><td>yes</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>This table has exactly the same shape as the lock compatibility matrix on <a href="03-locks-and-2pl.html#s1">page 3</a>. That's by design: locks exist to stop conflicting operations from interleaving.</p>
+    </section>
+
+    <section>
+      <h2 id="s6">6. Conflict-serializability</h2>
+      <p>Two schedules are <em class="term">conflict-equivalent</em> if one can be turned into the other by repeatedly swapping adjacent <em>non-conflicting</em> operations, or equivalently, if every pair of conflicting operations appears in the same order in both. A schedule is <em class="term">conflict-serializable</em> if it is conflict-equivalent to some serial schedule.</p>
+      <p>Conflict-serializability is the working definition of "isolation is correct" used by locking systems, and by the rest of these pages. It's slightly stricter than the most general notion (view-serializability), but it can be checked efficiently, which is what matters here.</p>
+    </section>
+
+    <section>
+      <h2 id="s7">7. The precedence graph test</h2>
+      <p>The <em class="term">precedence graph</em> \(P(S)\) of a schedule \(S\) has one node per committed transaction and a directed edge \(T_i \to T_j\) whenever some operation of \(T_i\) conflicts with a <em>later</em> operation of \(T_j\).</p>
+      <div class="eq">
+        \[ S \text{ is conflict-serializable} \iff P(S) \text{ has no directed cycle} \]
+        <p class="note">If \(P(S)\) is acyclic, any topological order of its nodes is an equivalent serial order. If it has a cycle \(T_i \to \cdots \to T_i\), then \(T_i\) would have to come before itself in any equivalent serial order, which is impossible. Building the graph and checking for a cycle takes \(O(V + E)\) time, for \(V\) transactions and \(E\) edges.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example A · serializable</span>
+        <p class="sched">S₁ = r₁(A) w₁(A) r₂(A) w₂(A) r₁(B) w₁(B) c₁ c₂</p>
+        <p>Conflicting pairs on A: \(r_1(A)\) before \(w_2(A)\), \(w_1(A)\) before \(r_2(A)\), \(w_1(A)\) before \(w_2(A)\). All give \(T_1 \to T_2\). B is touched only by \(T_1\). The graph is the single edge \(T_1 \to T_2\), which is acyclic, so \(S_1\) is equivalent to the serial order \(T_1, T_2\).</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example B · not serializable (this exact shape appears in the project's logs)</span>
+        <p class="sched">S₂ = r₁(N) w₂(N) c₂ w₁(N) c₁</p>
+        <p>\(r_1(N)\) before \(w_2(N)\) gives \(T_1 \to T_2\). \(w_2(N)\) before \(w_1(N)\) gives \(T_2 \to T_1\). That's a cycle, so no serial order is equivalent. In data terms it's a lost update: \(T_1\) writes N based on a read that \(T_2\)'s committed write had already made stale.</p>
+      </div>
+      <div class="figure">
+        <svg viewBox="0 0 560 130" width="560" height="130" role="img" aria-label="Two precedence graphs: A has one edge T1 to T2; B has edges both ways forming a cycle">
+          <text x="120" y="20" font-size="12" fill="var(--ink-soft)" text-anchor="middle">S₁: acyclic</text>
+          <circle cx="60" cy="75" r="24" fill="var(--good-soft)" stroke="var(--good)"/>
+          <text x="60" y="80" font-size="13" fill="var(--good)" text-anchor="middle">T₁</text>
+          <circle cx="180" cy="75" r="24" fill="var(--good-soft)" stroke="var(--good)"/>
+          <text x="180" y="80" font-size="13" fill="var(--good)" text-anchor="middle">T₂</text>
+          <line x1="86" y1="75" x2="148" y2="75" stroke="var(--good)" stroke-width="2"/>
+          <polygon points="154,75 144,70 144,80" fill="var(--good)"/>
+          <text x="420" y="20" font-size="12" fill="var(--ink-soft)" text-anchor="middle">S₂: cycle</text>
+          <circle cx="360" cy="75" r="24" fill="var(--impl-soft)" stroke="var(--impl)"/>
+          <text x="360" y="80" font-size="13" fill="var(--impl)" text-anchor="middle">T₁</text>
+          <circle cx="480" cy="75" r="24" fill="var(--impl-soft)" stroke="var(--impl)"/>
+          <text x="480" y="80" font-size="13" fill="var(--impl)" text-anchor="middle">T₂</text>
+          <path d="M 383 64 Q 420 44 452 62" fill="none" stroke="var(--impl)" stroke-width="2"/>
+          <polygon points="457,65 446,64 452,56" fill="var(--impl)"/>
+          <path d="M 457 86 Q 420 106 388 88" fill="none" stroke="var(--impl)" stroke-width="2"/>
+          <polygon points="383,85 394,86 388,94" fill="var(--impl)"/>
+          <text x="420" y="40" font-size="11" fill="var(--impl)" text-anchor="middle">r₁(N) &lt; w₂(N)</text>
+          <text x="420" y="122" font-size="11" fill="var(--impl)" text-anchor="middle">w₂(N) &lt; w₁(N)</text>
+        </svg>
+        <figcaption>Precedence graphs for S₁ (edge T₁→T₂ only) and S₂ (edges both ways, a cycle).</figcaption>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s8">8. Aborts: recoverable, cascadeless and strict schedules</h2>
+      <p>Serializability assumes every transaction commits. Aborts add a second family of requirements, each stronger than the one before:</p>
+      <ul>
+        <li><em class="term">Recoverable</em>: if \(T_j\) reads something \(T_i\) wrote, \(T_j\) commits only after \(T_i\) commits. Otherwise a committed transaction could depend on an aborted one.</li>
+        <li><em class="term">Cascadeless</em> (avoids <em class="term">cascading aborts</em>): transactions only read values written by already-committed transactions. Otherwise one abort forces every reader of its writes to abort too, and their readers, and so on.</li>
+        <li><em class="term">Strict</em>: no transaction reads <em>or writes</em> an item until the last transaction that wrote it has committed or aborted. This makes undo simple: restoring the old value can't clobber anyone else's write.</li>
+      </ul>
+      <div class="worked">
+        <span class="box-label">Worked example · a cascading abort</span>
+        <p class="sched">w₁(x) r₂(x) w₂(y) r₃(y) a₁</p>
+        <p>\(T_2\) read \(T_1\)'s uncommitted \(x\), and \(T_3\) read \(T_2\)'s \(y\). When \(T_1\) aborts, \(T_2\) must abort, and then \(T_3\) must too. A strict schedule would have made \(T_2\) wait for \(c_1\) or \(a_1\) before reading \(x\).</p>
+      </div>
+      <p><a href="03-locks-and-2pl.html#s7">Page 3</a> shows that holding locks until commit ("strict 2PL") produces exactly these strict schedules.</p>
+    </section>
+
+    <div class="recap"><span class="box-label">Carried forward</span>the \(r_i(x), w_i(x), c_i, a_i\) notation (§1) · ACID, and that the project covers only I (§2) · schedules and \(n!\) serial orders (§3) · lost update, dirty read, unrepeatable read (§4) · the conflict rule (§5) · conflict-serializability (§6) · the precedence-graph test and example S₂ (§7) · recoverable, cascadeless and strict schedules and cascading aborts (§8).</div>
+  </main>
+  <div class="pager">
+    <a href="index.html"><span class="lbl">Back</span>← Contents</a>
+    <a class="next" href="02-threads-mutexes-condvars.html"><span class="lbl">Next</span>Threads, mutexes and condition variables →</a>
+  </div>
+</div>
+</body>
+</html>

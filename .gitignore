@@ -3,3 +3,9 @@ transaction_metrics.txt
 rag_log.txt
 .vscode
 deadlock_test
+# build outputs
+test_lock_manager
+benchmark
+2pl_test_runner
+benchmark_results/logs/
+test_correctness

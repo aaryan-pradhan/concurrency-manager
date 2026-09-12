@@ -170,7 +170,16 @@ void testLockInformation(LockManager& lockManager, Logger& logger) {
 int main() {
     // Initialize logger and lock manager
     Logger logger("test_lock_manager.log", true, LogLevel::DEBUG);
-    LockManager lockManager(logger);
+    ResourceAllocationGraph rag(logger);
+    LockManager lockManager(logger, rag);
+
+    // LockManager refuses requests from unregistered (or aborted) transactions,
+    // so register every transaction id these tests use
+    std::vector<std::shared_ptr<Transaction>> txns;
+    for (int id : {1, 2, 3, 4, 10, 11, 12, 20, 21, 50, 60}) {
+        txns.push_back(std::make_shared<Transaction>(id));
+        Transaction::RegisterTransaction(txns.back());
+    }
     
     std::cout << "Starting Lock Manager Tests\n";
     logger.info("Lock Manager test suite started");

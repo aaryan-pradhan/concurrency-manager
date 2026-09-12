@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Prerequisite 4: Deadlocks and wait-for graphs · Concurrency Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Prerequisite 4 · Deadlocks</span></div>
+    <span class="stage-tag">Prerequisite 4</span>
+    <h1 class="title">Deadlocks, wait-for graphs and recovery</h1>
+    <p class="dek">When 2PL transactions wait on each other in a circle, something has to give. This page covers the four families of fixes, how to find a cycle with depth-first search, why the victim must sit on the cycle, and how aging and backoff keep restarted transactions from starving.</p>
+  </header>
+  <main>
+
+    <div class="recap"><span class="box-label">Uses</span>S/X locks, the lock table and upgrades from <a href="03-locks-and-2pl.html#s1">page 3, sections 1–3</a> · 2PL allows deadlock, from <a href="03-locks-and-2pl.html#s8">page 3, section 8</a> · starvation from <a href="03-locks-and-2pl.html#s2">page 3, section 2</a> · the precedence graph from <a href="01-transactions-and-serializability.html#s7">page 1, section 7</a> (a different graph, compared below) · the TOCTOU gap from <a href="02-threads-mutexes-condvars.html#s7">page 2, section 7</a>.</div>
+
+    <section>
+      <div class="spec-quote">
+        <span class="box-label">docs/06-deadlocks-explained.md</span>
+        <blockquote>"This project's approach is Detection + Recovery, implemented via two independent, redundant mechanisms that both exist in the codebase: A Resource Allocation Graph […] that can detect cycles among resource/transaction edges. A wait-for graph with a background detection thread […] that periodically scans for cycles and aborts the lowest-priority transaction involved."</blockquote>
+      </div>
+      <p>"Detection + Recovery" is one of four families in section 2. The "Resource Allocation Graph" is section 3, the "wait-for graph" section 4, "scans for cycles" section 5, and "aborts the lowest-priority transaction involved" sections 6 and 8. "Periodically" brings a delay and a stale-snapshot problem, covered in section 7.</p>
+    </section>
+
+    <section>
+      <h2 id="s1">1. Deadlock and the Coffman conditions</h2>
+      <p>A <em class="term">deadlock</em> is a set of transactions where each is waiting for a lock held by another member of the set, so none can ever proceed on its own. It requires all four <em class="term">Coffman conditions</em> at once:</p>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Condition</th><th>Meaning</th><th>Under 2PL locking</th></tr></thead>
+        <tbody>
+          <tr><td>Mutual exclusion</td><td>a resource can't be shared freely</td><td>X locks exclude everyone, S excludes X</td></tr>
+          <tr><td>Hold and wait</td><td>hold some resources while waiting for more</td><td>the growing phase does exactly this</td></tr>
+          <tr><td>No preemption</td><td>resources can't be taken away</td><td>true, until the system aborts a transaction</td></tr>
+          <tr><td>Circular wait</td><td>a cycle of waiters</td><td>depends on the access order</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>Breaking any one condition makes deadlock impossible. Aborting a victim is a forced, after-the-fact preemption.</p>
+    </section>
+
+    <section>
+      <h2 id="s2">2. Four ways to handle deadlock</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Family</th><th>Idea</th><th>Cost</th></tr></thead>
+        <tbody>
+          <tr><td>Prevention</td><td>make a condition impossible: lock items in a fixed global order, or take every lock up front (conservative 2PL)</td><td>needs the access set in advance, and restricts programs</td></tr>
+          <tr><td>Timestamp schemes</td><td><em class="term">wait-die</em>: an older requester waits, a younger one aborts. <em class="term">Wound-wait</em>: an older requester aborts the younger holder, a younger one waits</td><td>aborts some transactions that were never in a real deadlock</td></tr>
+          <tr><td>Timeouts</td><td>abort any transaction that waits longer than \(\tau\)</td><td>\(\tau\) is either too long (slow recovery) or too short (false aborts)</td></tr>
+          <tr><td>Detection + recovery</td><td>allow cycles, look for them, abort a victim</td><td>graph-building and search cost, plus a delay before detection</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · wait-die never starves anyone</span>
+        <p>Timestamps are start times: \(\mathrm{TS}(T_1) = 5\) (older) and \(\mathrm{TS}(T_2) = 10\). If \(T_1\) requests a lock \(T_2\) holds, \(T_1\) is older, so it waits. If \(T_2\) requests a lock \(T_1\) holds, \(T_2\) is younger, so it dies (aborts) and restarts <em>keeping</em> \(\mathrm{TS} = 10\). As older transactions finish, \(T_2\) eventually becomes the oldest and can then only wait, never die. Keeping the original timestamp is the textbook form of <em class="term">aging</em> (section 8).</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s3">3. Resource allocation graphs</h2>
+      <p>A <em class="term">resource allocation graph</em> (RAG) has two kinds of node, transactions and resources. An <em class="term">assignment edge</em> \(R \to T\) means \(T\) holds \(R\). A <em class="term">request edge</em> \(T \to R\) means \(T\) is waiting for \(R\). A <em class="term">claim edge</em> (drawn dashed) means \(T\) may request \(R\) later. Claim edges are only needed by <em class="term">deadlock avoidance</em> algorithms such as the Banker's algorithm.</p>
+      <p>When each resource has a single instance, the rule is simple: a cycle in the RAG means a deadlock, and a deadlock means a cycle.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · test4 as a RAG</span>
+        <p>\(A \to T_1\) (T₁ holds A), \(T_1 \to B\) (T₁ wants B), \(B \to T_2\), \(T_2 \to A\). Following the arrows: \(A \to T_1 \to B \to T_2 \to A\), a cycle.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s4">4. Wait-for graphs</h2>
+      <p>A <em class="term">wait-for graph</em> (WFG) drops the resource nodes. It has an edge \(T_a \to T_b\) when \(T_a\) is waiting for a lock that \(T_b\) holds in an incompatible mode. It's built by scanning the lock table:</p>
+<pre><code>for each item x:
+    for each waiting request (Ta, mode) on x:
+        for each granted request (Tb, mode') on x with Tb != Ta and incompatible(mode, mode'):
+            add edge Ta -&gt; Tb</code></pre>
+      <p>A cycle in the WFG is a deadlock. Under a FIFO grant policy (page 3, section 2), a waiter is also blocked by incompatible requests queued ahead of it, and those need edges too. Under barging, only holders block.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · tests/test5.txt</span>
+        <p>After \(X_1(A), X_2(B), X_3(C)\), the requests \(X_1(B), X_2(C), X_3(A)\) all wait. Edges: \(T_1 \to T_2\) (B), \(T_2 \to T_3\) (C), \(T_3 \to T_1\) (A). That's a 3-cycle.</p>
+      </div>
+      <div class="callout impl">
+        <span class="box-label">Be careful · the WFG isn't the precedence graph</span>
+        <p>The precedence graph (page 1, section 7) records the <em>order</em> of conflicting operations that already happened, and its cycles mean non-serializable. The WFG records who is <em>currently blocked</em> on whom, and its cycles mean deadlock. A system can have a cycle-free WFG and still produce a non-serializable schedule if its locking is wrong.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s5">5. Finding a cycle with depth-first search</h2>
+      <p><em class="term">Depth-first search</em> (DFS) follows edges as deep as possible before backtracking. For cycle detection each node has three states: unvisited, <em>on the current path</em> (the recursion stack, often called grey), and finished. An edge to a node that's on the current path is a <em class="term">back edge</em>, and a back edge exists exactly when the graph has a cycle.</p>
+<pre><code>dfs(u):
+    on_stack[u] = visited[u] = true
+    for v in out(u):
+        if not visited[v]:
+            if dfs(v): return true
+        else if on_stack[v]:
+            cycle = stack segment from v up to u     // the actual cycle members
+            return true
+    on_stack[u] = false
+    return false</code></pre>
+      <div class="eq">
+        \[ \text{time} = O(V + E) \]
+        <p class="note">Each node is entered once and each edge examined once, over all roots. \(V\) = transactions in the graph, \(E\) = wait edges.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · a cycle with a tail</span>
+        <p>Edges \(T_1 \to T_2\), \(T_2 \to T_3\), \(T_3 \to T_2\), starting from \(T_1\). The stack grows \([T_1]\), then \([T_1, T_2]\), then \([T_1, T_2, T_3]\). From \(T_3\), the edge to \(T_2\) hits a node on the stack: a back edge. The cycle is the stack segment from \(T_2\) to \(T_3\), which is \(\{T_2, T_3\}\). \(T_1\) is on the stack but <strong>not</strong> in the cycle. It's a <em class="term">tail</em>: blocked by the deadlock, but not part of it.</p>
+      </div>
+      <div class="figure">
+        <svg viewBox="0 0 520 150" width="520" height="150" role="img" aria-label="T1 points to T2; T2 and T3 point to each other. T2 and T3 are highlighted as the cycle; T1 is a tail.">
+          <rect x="175" y="18" width="330" height="116" rx="12" fill="var(--impl-soft)" stroke="var(--impl)" stroke-dasharray="5 4"/>
+          <text x="340" y="36" font-size="11" fill="var(--impl)" text-anchor="middle">cycle {T₂, T₃}</text>
+          <circle cx="80" cy="85" r="26" fill="var(--paper-raised)" stroke="var(--ink-soft)"/>
+          <text x="80" y="90" font-size="13" fill="var(--ink)" text-anchor="middle">T₁</text>
+          <text x="80" y="135" font-size="11" fill="var(--ink-soft)" text-anchor="middle">tail</text>
+          <circle cx="250" cy="85" r="26" fill="var(--paper-raised)" stroke="var(--impl)"/>
+          <text x="250" y="90" font-size="13" fill="var(--impl)" text-anchor="middle">T₂</text>
+          <circle cx="430" cy="85" r="26" fill="var(--paper-raised)" stroke="var(--impl)"/>
+          <text x="430" y="90" font-size="13" fill="var(--impl)" text-anchor="middle">T₃</text>
+          <line x1="106" y1="85" x2="216" y2="85" stroke="var(--ink-soft)" stroke-width="2"/>
+          <polygon points="223,85 213,80 213,90" fill="var(--ink-soft)"/>
+          <path d="M 272 71 Q 340 48 405 70" fill="none" stroke="var(--impl)" stroke-width="2"/>
+          <polygon points="410,73 399,72 405,64" fill="var(--impl)"/>
+          <path d="M 408 99 Q 340 122 277 100" fill="none" stroke="var(--impl)" stroke-width="2"/>
+          <polygon points="272,97 283,98 277,106" fill="var(--impl)"/>
+        </svg>
+        <figcaption>DFS from T₁ reaches the cycle T₂⇄T₃. T₁ is on the search path but is not a cycle member.</figcaption>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s6">6. Victim selection</h2>
+      <p>Recovery aborts one <em class="term">victim</em>, which releases its locks. The victim must be a member of the cycle \(C\): aborting anything else releases no lock that a cycle member is waiting for, so the cycle survives.</p>
+      <div class="eq">
+        \[ \text{victim} = \operatorname*{arg\,min}_{T \in C} \; \mathrm{cost}(T) \]
+        <p class="note">Common costs: priority, work done so far (fewest operations or locks, so the cheapest redo), youngest start time, or fewest previous restarts. The minimum is taken over the cycle's members \(C\), not over every node the search happened to visit.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · picking the tail wastes an abort</span>
+        <p>In the section 5 graph with equal costs, aborting \(T_1\) releases \(T_1\)'s locks, but \(T_2\) and \(T_3\) wait only on each other. The cycle remains, so a second abort (of \(T_2\) or \(T_3\)) is still needed. Result: two aborts where one would do, and \(T_1\), which was never deadlocked, pays for it.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s7">7. Periodic detection: delay and stale snapshots</h2>
+      <p>Running detection after every lock wait is expensive, so systems often run it every \(\Delta\) milliseconds. A deadlock that forms at a random moment then waits until the next pass:</p>
+      <div class="eq">
+        \[ \mathbb{E}[\text{wait before detection}] \approx \frac{\Delta}{2} + t_{\text{pass}}, \qquad \text{worst case} \approx \Delta + t_{\text{pass}} \]
+        <p class="note">\(t_{\text{pass}}\) is how long one build-and-search pass takes. This assumes formation times are uniformly spread over the interval.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example</span>
+        <p>With \(\Delta = 100\) ms and a 5 ms pass: about \(50 + 5 = 55\) ms on average, up to about 105 ms. For that whole time, every transaction in the cycle (and every tail behind it) holds its locks while doing nothing.</p>
+      </div>
+      <p>If the graph is built by querying the lock table one item at a time, with the latch taken and released per item, other threads change the table during the scan (the TOCTOU gap from page 2, section 7). The resulting graph can contain edges that no longer exist and miss new ones, so a "cycle" may be a <em class="term">phantom deadlock</em> and cause an unnecessary abort.</p>
+    </section>
+
+    <section>
+      <h2 id="s8">8. Starvation and aging</h2>
+      <p>A transaction that is chosen as victim again and again, or keeps being overtaken, is <em class="term">starving</em> (page 3, section 2). <em class="term">Aging</em> raises a transaction's standing the longer it has waited or the more times it has been aborted, so it eventually wins every contest. The simplest form counts restarts:</p>
+      <div class="eq">
+        \[ p_k = p_0 + k \]
+        <p class="note">\(p_0\) is the initial priority, \(k\) the number of restarts so far, and a lower \(p\) means "abort me first". Wait-die (section 2) achieves the same thing by keeping the original timestamp.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example</span>
+        <p>All transactions start at \(p_0 = 1\). A transaction restarted three times has \(p_3 = 4\). In a cycle with two fresh transactions at priority 1, the minimum is 1, so a fresh transaction is the victim and the veteran survives. Aging only helps if victim selection actually looks at these priorities and grants aren't handed to barging newcomers.</p>
+      </div>
+      <div class="callout impl">
+        <span class="box-label">Be careful · aging a victim choice isn't priority scheduling</span>
+        <p>"Priority scheduling" normally means the scheduler hands out the resource (the CPU, or here a lock) to the highest-priority waiter first. Using priority only to decide <em>whom to abort</em> is victim selection. The two terms describe different mechanisms.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s9">9. Restarting: exponential backoff with jitter</h2>
+      <p>A victim that restarts immediately often recreates the same cycle. <em class="term">Exponential backoff</em> waits longer after each abort, and <em class="term">jitter</em> randomizes the wait so transactions aborted together don't retry in lockstep:</p>
+      <div class="eq">
+        \[ b(k) = \min\!\big(b_0 \cdot 2^{k},\; b_{\max}\big) \cdot (1 + \varepsilon), \qquad \varepsilon \sim \mathrm{Uniform}[-0.3,\, 0.3] \]
+        <p class="note">\(b_0\) is the base delay, \(k\) the retry count, \(b_{\max}\) the cap, and \(\varepsilon\) the ±30% jitter. Note the order: jitter applied <em>after</em> the cap can push a delay above \(b_{\max}\).</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · b₀ = 10 ms, b_max = 1,000 ms</span>
+        <p>Before jitter: \(k = 1 \to 20\), \(2 \to 40\), \(3 \to 80\), \(4 \to 160\), \(5 \to 320\), \(6 \to 640\), \(7 \to \min(1280, 1000) = 1000\) ms. A transaction aborted 7 times has slept \(20 + 40 + 80 + 160 + 320 + 640 + 1000 = 2{,}260\) ms before jitter. With \(\varepsilon = +0.3\) the last sleep is \(1{,}300\) ms, above the cap.</p>
+      </div>
+      <p>Without randomness, two transactions can abort each other forever in perfect rhythm. That's <em class="term">livelock</em>: everyone is busy and nobody finishes.</p>
+    </section>
+
+    <section>
+      <h2 id="s10">10. More threads can mean less throughput</h2>
+      <p><em class="term">Throughput</em> is committed transactions per second. Adding concurrent transactions helps while they rarely conflict, or while each spends time blocked on something other than locks (disk, network, a user). Once they mostly contend for the same few items, extra concurrency buys lock waits, deadlock-detection delay, aborted work and backoff sleeps. Throughput then <em>falls</em> as concurrency rises, which is called <em class="term">data-contention thrashing</em>. Whether a multi-threaded lock manager beats running the same transactions one at a time is therefore an empirical question about a specific workload, and it has to be measured.</p>
+    </section>
+
+    <div class="recap"><span class="box-label">Carried forward</span>deadlock and the Coffman conditions (§1) · prevention, wait-die/wound-wait, timeouts, detection (§2) · RAG with assignment/request/claim edges (§3) · WFG construction, and WFG vs precedence graph (§4) · DFS back edges, stack-segment cycles, tails, \(O(V+E)\) (§5) · the victim must be a cycle member (§6) · detection delay \(\Delta/2 + t_{\text{pass}}\) and phantom deadlocks (§7) · starvation, aging \(p_k = p_0 + k\), and victim selection ≠ priority scheduling (§8) · backoff with jitter, jitter after the cap, livelock (§9) · throughput and data-contention thrashing (§10).</div>
+  </main>
+  <div class="pager">
+    <a href="03-locks-and-2pl.html"><span class="lbl">Back</span>← Locks and two-phase locking</a>
+    <a class="next" href="05-part-transaction-and-manager.html"><span class="lbl">Next</span>Part 1 · Transaction and ConcurrencyManager →</a>
+  </div>
+</div>
+</body>
+</html>

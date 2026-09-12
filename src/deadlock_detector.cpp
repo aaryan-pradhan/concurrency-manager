@@ -1,6 +1,7 @@
 #include "../include/deadlock_detector.h"
 #include "../include/transaction.h"
 #include "../include/lock_manager.h"
+#include <climits>
 
 DeadlockDetector::DeadlockDetector(LockManager &lock_manager, Logger &logger, uint64_t detection_interval_ms)
     : lock_manager_(lock_manager),
@@ -39,7 +40,12 @@ DeadlockDetector::~DeadlockDetector()
 
 void DeadlockDetector::AddEdge(txn_id_t t1, txn_id_t t2)
 {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    AddEdgeInternal(t1, t2);
+}
 
+void DeadlockDetector::AddEdgeInternal(txn_id_t t1, txn_id_t t2)
+{
     // Check if the edge already exists
     auto &edges = wait_for_graph_[t1];
     if (std::find(edges.begin(), edges.end(), t2) == edges.end())
@@ -60,6 +66,7 @@ void DeadlockDetector::AddEdge(txn_id_t t1, txn_id_t t2)
 
 void DeadlockDetector::RemoveEdge(txn_id_t t1, txn_id_t t2)
 {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
 
     // Check if t1 exists in the graph
     auto it = wait_for_graph_.find(t1);
@@ -79,61 +86,51 @@ void DeadlockDetector::RemoveEdge(txn_id_t t1, txn_id_t t2)
         }
     }
 }
-bool DeadlockDetector::DFS(txn_id_t node, std::unordered_map<txn_id_t, bool> &visited,
-                           std::unordered_map<txn_id_t, bool> &in_stack,
-                           txn_id_t &min_priority_txn)
+
+bool DeadlockDetector::FindCycle(txn_id_t node, std::unordered_map<txn_id_t, bool> &visited,
+                                 std::unordered_map<txn_id_t, bool> &in_stack,
+                                 std::vector<txn_id_t> &path, std::vector<txn_id_t> &cycle)
 {
     visited[node] = true;
     in_stack[node] = true;
+    path.push_back(node);
 
-    // Get neighbors
     auto it = wait_for_graph_.find(node);
     if (it != wait_for_graph_.end())
     {
         for (const auto &neighbor : it->second)
         {
-            // If not visited, recursively explore
             if (!visited[neighbor])
             {
-                if (DFS(neighbor, visited, in_stack, min_priority_txn))
+                if (FindCycle(neighbor, visited, in_stack, path, cycle))
                 {
-                    // Update min priority transaction if current has lower priority
-                    Transaction *curr_txn = Transaction::GetTransaction(node);
-                    Transaction *min_txn = Transaction::GetTransaction(min_priority_txn);
-
-                    if (curr_txn && min_txn && curr_txn->getPriority() < min_txn->getPriority())
-                    {
-                        min_priority_txn = node;
-                    }
-                    return true; // Cycle found
+                    return true;
                 }
             }
-            // If already in recursion stack, we found a cycle
             else if (in_stack[neighbor])
             {
-                // Initialize min priority with current node
-                Transaction *curr_txn = Transaction::GetTransaction(node);
-                Transaction *min_txn = Transaction::GetTransaction(min_priority_txn);
-
-                if (curr_txn && min_txn && curr_txn->getPriority() < min_txn->getPriority())
-                {
-                    min_priority_txn = node;
-                }
-
-                logger_.debug("Cycle found in wait-for graph involving T" +
-                              std::to_string(node) + " and T" +
-                              std::to_string(neighbor));
-                return true; // Cycle found
+                // Back edge node -> neighbor: the cycle is the path segment from neighbor to node.
+                // Nodes earlier on the path only wait on the cycle and are not part of it.
+                auto start = std::find(path.begin(), path.end(), neighbor);
+                cycle.assign(start, path.end());
+                return true;
             }
         }
     }
 
-    // Backtrack: remove node from recursion stack
+    // Backtrack
     in_stack[node] = false;
-    return false; // No cycle found in this path
+    path.pop_back();
+    return false;
 }
 
 bool DeadlockDetector::HasCycle(txn_id_t &txn_id)
+{
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    return HasCycleInternal(txn_id);
+}
+
+bool DeadlockDetector::HasCycleInternal(txn_id_t &txn_id)
 {
     std::unordered_map<txn_id_t, bool> visited;
     std::unordered_map<txn_id_t, bool> in_stack;
@@ -144,104 +141,87 @@ bool DeadlockDetector::HasCycle(txn_id_t &txn_id)
     {
         nodes.push_back(node);
     }
-
     std::sort(nodes.begin(), nodes.end());
 
-    bool cycle_found = false;
-
-    // Start DFS from each unvisited node
     for (const auto &node : nodes)
     {
-        if (!visited[node])
+        if (visited[node])
         {
-            // Initialize min priority transaction as current node
-            txn_id_t current_min_priority_txn = node;
+            continue;
+        }
 
-            if (DFS(node, visited, in_stack, current_min_priority_txn))
+        std::vector<txn_id_t> path;
+        std::vector<txn_id_t> cycle;
+        if (!FindCycle(node, visited, in_stack, path, cycle))
+        {
+            continue;
+        }
+
+        // Victim: lowest priority among the cycle's members; ties go to the highest id.
+        // A transaction that no longer exists sorts first so it is simply dropped from the graph.
+        txn_id_t victim = cycle.front();
+        int victimPriority = INT_MAX;
+        std::string members;
+        for (txn_id_t member : cycle)
+        {
+            auto txn = Transaction::GetTransaction(member);
+            int priority = txn ? txn->getPriority() : INT_MIN;
+            members += "T" + std::to_string(member) + " ";
+            if (priority < victimPriority || (priority == victimPriority && member > victim))
             {
-                // If this is the first cycle, or we found a transaction with lower priority
-                Transaction *curr_min_txn = Transaction::GetTransaction(current_min_priority_txn);
-                Transaction *global_min_txn = Transaction::GetTransaction(txn_id);
-
-                if (!cycle_found || (curr_min_txn && global_min_txn &&
-                                     curr_min_txn->getPriority() < global_min_txn->getPriority()))
-                {
-                    txn_id = current_min_priority_txn;
-                }
-
-                cycle_found = true;
+                victim = member;
+                victimPriority = priority;
             }
         }
+
+        txn_id = victim;
+        logger_.info("Deadlock cycle detected: " + members + "-> victim T" + std::to_string(victim) +
+                     " (priority: " + std::to_string(victimPriority) + ")");
+        return true;
     }
 
-    if (cycle_found)
-    {
-        Transaction *victim = Transaction::GetTransaction(txn_id);
-        if (victim)
-        {
-            logger_.info("Deadlock cycle detected, minimum priority transaction: T" +
-                         std::to_string(txn_id) + " (priority: " +
-                         std::to_string(victim->getPriority()) + ")");
-        }
-    }
-
-    return cycle_found; // True if any cycles found
+    return false;
 }
 
-void DeadlockDetector::RunCycleDetection()
+int DeadlockDetector::RunCycleDetection()
 {
+    std::lock_guard<std::mutex> run(run_mutex_);
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+
     // Step 1: Build the wait-for graph
     BuildWaitForGraph();
 
     // Step 2: Detect and break all cycles
     int cyclesFound = 0;
-    while (true)
+    txn_id_t victimId = 0;
+    while (HasCycleInternal(victimId))
     {
-        txn_id_t min_priority_txn;
-
-        // If no cycle found, we're done
-        if (!HasCycle(min_priority_txn))
-        {
-            break;
-        }
-
         cyclesFound++;
 
-        // Get a pointer to the minimum priority transaction in the cycle
-        Transaction *txn = Transaction::GetTransaction(min_priority_txn);
+        auto txn = Transaction::GetTransaction(victimId);
 
-        // If transaction exists, abort it to break the cycle
-        if (txn != nullptr)
+        // abort() fails only if the victim committed after the snapshot; then its locks are
+        // being released anyway. Either way the node is removed, so the loop always terminates.
+        if (txn != nullptr && txn->abort())
         {
-            // Log before aborting
-            logger_.warning("Aborting transaction T" + std::to_string(min_priority_txn) +
+            logger_.warning("Aborting transaction T" + std::to_string(victimId) +
                             " (priority: " + std::to_string(txn->getPriority()) +
                             ") to break deadlock cycle");
 
-            // Set the transaction's state to ABORTED
-            txn->abort();
-
-            // Release all locks held by the aborted transaction
-            lock_manager_.releaseAllLocks(min_priority_txn);
-
-            // Remove the aborted transaction from the graph
-            {
-                std::lock_guard<std::mutex> lock(graph_mutex_);
-
-                // Remove it as a source node
-                wait_for_graph_.erase(min_priority_txn);
-
-                // Remove any edges to this transaction
-                for (auto &[_, edges] : wait_for_graph_)
-                {
-                    edges.erase(std::remove(edges.begin(), edges.end(), min_priority_txn), edges.end());
-                }
-            }
+            // Release all locks held by the aborted transaction and wake its waiting thread
+            lock_manager_.releaseAllLocks(static_cast<int>(victimId));
         }
         else
         {
-            logger_.error("Failed to find transaction T" + std::to_string(min_priority_txn) +
-                          " to abort for deadlock resolution");
+            logger_.info("Deadlock victim T" + std::to_string(victimId) +
+                         " already finished; removing it from the wait-for graph");
+        }
+
+        // Remove the victim from the graph
+        wait_for_graph_.erase(victimId);
+        for (auto &[_, edges] : wait_for_graph_)
+        {
+            edges.erase(std::remove(edges.begin(), edges.end(), victimId), edges.end());
         }
     }
 
@@ -250,7 +230,9 @@ void DeadlockDetector::RunCycleDetection()
         logger_.info("Deadlock detection resolved " + std::to_string(cyclesFound) +
                      " cycle(s)");
     }
+    return cyclesFound;
 }
+
 std::vector<std::pair<txn_id_t, txn_id_t>> DeadlockDetector::GetEdgeList()
 {
     std::lock_guard<std::mutex> lock(graph_mutex_);
@@ -271,89 +253,40 @@ std::vector<std::pair<txn_id_t, txn_id_t>> DeadlockDetector::GetEdgeList()
 
 void DeadlockDetector::BuildWaitForGraph()
 {
-    std::lock_guard<std::mutex> lock(graph_mutex_);
-
     // Clear any existing graph - build from scratch each time
     wait_for_graph_.clear();
 
-    logger_.debug("Building wait-for graph");
-
-    // For each resource in the system (assuming resource IDs are 0-10000)
-    for (int resource_id = 0; resource_id < 10000; resource_id++)
+    // One consistent snapshot of (waiter, holder) pairs from the lock table,
+    // instead of querying resource ids one at a time
+    for (const auto &[waiter_id, holder_id] : lock_manager_.getWaitForEdges())
     {
-        // Get transactions waiting for this resource
-        auto waiters = lock_manager_.getWaitingTransactions(resource_id);
-
-        // Skip resources with no waiters
-        if (waiters.empty())
+        auto waiter = Transaction::GetTransaction(waiter_id);
+        auto holder = Transaction::GetTransaction(holder_id);
+        if (!waiter || waiter->getState() == TransactionState::ABORTED ||
+            !holder || holder->getState() == TransactionState::ABORTED)
+        {
             continue;
-
-        // Get transactions currently holding locks on this resource
-        auto holders = lock_manager_.getLockHolders(resource_id);
-
-        if (!waiters.empty() && !holders.empty())
-        {
-            logger_.debug("Resource R" + std::to_string(resource_id) + " has " +
-                          std::to_string(waiters.size()) + " waiters and " +
-                          std::to_string(holders.size()) + " holders");
-
-            // Log details about waiters and holders
-            std::string waiter_ids;
-            for (auto w : waiters)
-                waiter_ids += "T" + std::to_string(w) + " ";
-
-            std::string holder_ids;
-            for (auto h : holders)
-                holder_ids += "T" + std::to_string(h) + " ";
-
-            logger_.debug("Resource R" + std::to_string(resource_id) +
-                          " waiters: " + waiter_ids + ", holders: " + holder_ids);
         }
-
-        // For each waiter, add edges to all holders (waiter -> holder)
-        for (auto waiter_id : waiters)
-        {
-            // Skip aborted transactions
-            Transaction *waiter = Transaction::GetTransaction(waiter_id);
-            if (!waiter || waiter->getState() == TransactionState::ABORTED)
-            {
-                continue;
-            }
-
-            for (auto holder_id : holders)
-            {
-                // Skip aborted transactions or self-references
-                if (holder_id == waiter_id)
-                    continue;
-
-                Transaction *holder = Transaction::GetTransaction(holder_id);
-                if (!holder || holder->getState() == TransactionState::ABORTED)
-                {
-                    continue;
-                }
-
-                // Add edge from waiter to holder
-                AddEdge(waiter_id, holder_id);
-            }
-        }
+        AddEdgeInternal(waiter_id, holder_id);
     }
 
-    // Debug output - print the graph
-    std::string graph_summary;
-    for (const auto &[node, edges] : wait_for_graph_)
+    if (logger_.isEnabled(LogLevel::DEBUG))
     {
-        if (!edges.empty())
+        std::string graph_summary;
+        for (const auto &[node, edges] : wait_for_graph_)
         {
-            graph_summary += "T" + std::to_string(node) + " -> ";
-            for (auto e : edges)
-                graph_summary += "T" + std::to_string(e) + " ";
-            graph_summary += "\n";
+            if (!edges.empty())
+            {
+                graph_summary += "T" + std::to_string(node) + " -> ";
+                for (auto e : edges)
+                    graph_summary += "T" + std::to_string(e) + " ";
+                graph_summary += "\n";
+            }
         }
-    }
-
-    if (!graph_summary.empty())
-    {
-        logger_.debug("Wait-for graph:\n" + graph_summary);
+        if (!graph_summary.empty())
+        {
+            logger_.debug("Wait-for graph:\n" + graph_summary);
+        }
     }
 }
 

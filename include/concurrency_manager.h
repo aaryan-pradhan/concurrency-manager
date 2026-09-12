@@ -1,6 +1,7 @@
 #pragma once
 
 #include <unordered_map>
+#include <functional>
 #include <memory>
 #include <vector>
 #include <mutex>
@@ -18,20 +19,24 @@
 class ConcurrencyManager
 {
 private:
-    // Manager for locks on resources
-    LockManager lockManager;
+    // NOTE: members are constructed in declaration order, not initializer-list order.
+    // logger must exist before rag, and both before lockManager, which logs and
+    // stores references to them in its constructor.
 
     // Logger for operations
     Logger logger;
 
-    // Deadlock detector
-    std::unique_ptr<DeadlockDetector> deadlockDetector;
-
     // Resource allocation graph for deadlock detection
     ResourceAllocationGraph rag;
 
+    // Manager for locks on resources
+    LockManager lockManager;
+
+    // Deadlock detector
+    std::unique_ptr<DeadlockDetector> deadlockDetector;
+
     // Map of active transactions
-    std::unordered_map<int, std::unique_ptr<Transaction>> transactions;
+    std::unordered_map<int, std::shared_ptr<Transaction>> transactions;
 
     // Mutex for thread safety
     mutable std::mutex mtx;
@@ -40,20 +45,22 @@ private:
     int nextTxnId;
 
     /**
-     * @brief Gets a transaction by ID, returns nullptr if not found
+     * @brief Gets a transaction by ID, returns nullptr if not found (caller holds mtx)
      * @param txnId ID of the transaction to find
      * @return Pointer to the transaction, or nullptr if not found
      */
-    Transaction *getTransaction(int txnId);
+    std::shared_ptr<Transaction> getTransaction(int txnId);
 
 public:
     /**
      * @brief Constructs a new ConcurrencyManager
      * @param logFilePath Path to the log file
      * @param detectionIntervalMs Interval for deadlock detection in milliseconds
+     * @param logLevel Minimum level written to the log file
      */
     explicit ConcurrencyManager(const std::string &logFilePath = "concurrency.log",
-                                uint64_t detectionIntervalMs = 200);
+                                uint64_t detectionIntervalMs = 200,
+                                LogLevel logLevel = LogLevel::INFO);
 
     /**
      * @brief Destructor - ensures proper cleanup
@@ -68,7 +75,7 @@ public:
      * @return Transaction ID that was created or reused
      */
     int beginTransaction(const std::string &metadata = "", int requestedTxnId = -1, int priority = 1);
-    
+
     /**
      * @brief Attempts to acquire a lock for a transaction
      * @param txnId ID of the transaction
@@ -90,9 +97,12 @@ public:
     /**
      * @brief Commits a transaction and releases all its locks
      * @param txnId ID of the transaction
+     * @param beforeRelease Optional callback run after the commit point (state is COMMITTED,
+     *        so the deadlock detector can no longer abort it) but before any lock is released.
+     *        Use it to install buffered writes.
      * @return true if transaction was committed, false otherwise
      */
-    bool commitTransaction(int txnId);
+    bool commitTransaction(int txnId, const std::function<void()> &beforeRelease = {});
 
     /**
      * @brief Aborts a transaction and releases all its locks
@@ -123,8 +133,8 @@ public:
     std::string getSystemState() const;
 
     /**
-     * @brief Check for a deadlock in the system
-     * @return true if a deadlock was found and resolved, false otherwise
+     * @brief Run one deadlock detection pass immediately (in addition to the background thread)
+     * @return true if at least one deadlock was found and resolved
      */
     bool checkForDeadlocks();
 

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Prerequisite 2: Threads, mutexes and condition variables · Concurrency Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Prerequisite 2 · Threads</span></div>
+    <span class="stage-tag">Prerequisite 2</span>
+    <h1 class="title">Threads, mutexes and condition variables in C++</h1>
+    <p class="dek">The operating-system tools the engine is built from: threads, the data races they cause, mutexes that stop them, condition variables for waiting, and the C++ object-lifetime rule behind the project's startup crash.</p>
+  </header>
+  <main>
+
+    <div class="recap"><span class="box-label">Uses</span>the lost-update anomaly from <a href="01-transactions-and-serializability.html#s4">page 1, section 4</a>, which has the same shape as a data race.</div>
+
+    <section>
+      <div class="spec-quote">
+        <span class="box-label">docs/03-concurrency-threads-and-race-conditions.md</span>
+        <blockquote>"Important distinction: these mutexes are an implementation detail used to keep the C++ objects themselves from corrupting their own internal data. They are completely different from the transaction locks (shared/exclusive locks on resource IDs) that are this project's actual subject matter. A mutex protects a data structure in memory for a few instructions; a transaction lock protects a logical database resource for the lifetime of a transaction, potentially seconds."</blockquote>
+      </div>
+      <p>This page is about the first kind of lock in that quote, the mutex. <a href="03-locks-and-2pl.html">Page 3</a> is about the second kind. The engine needs both, and several of the bugs later on sit exactly where the two meet.</p>
+    </section>
+
+    <section>
+      <h2 id="s1">1. Processes and threads</h2>
+      <p>A <em class="term">process</em> is a running program with its own memory. A <em class="term">thread</em> is one sequence of execution inside a process. All threads of a process share its heap and global variables, but each has its own stack. In C++, <code>std::thread t(f, args...)</code> starts running <code>f</code> on a new thread, and <code>t.join()</code> blocks until it finishes.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · 1,000 threads on 8 cores</span>
+        <p>The project's big test files start one thread per transaction, so 1,000 threads (plus the main thread and a background detector thread). The audit machine has 8 logical cores, so at any instant at most 8 threads are actually executing. The other \(1{,}002 - 8 = 994\) are sleeping, blocked, or waiting for the OS scheduler. More threads than cores adds scheduling overhead, and it only raises throughput when threads spend most of their time blocked on something other than each other.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s2">2. Race conditions and data races</h2>
+      <p>A <em class="term">race condition</em> is a bug whose outcome depends on the timing of threads. The most common kind is a <em class="term">data race</em>: two threads access the same memory at the same time, at least one of them writes, and nothing coordinates them.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · a lost increment</span>
+        <p><code>counter++</code> is three machine steps: load, add 1, store. Starting from <code>counter = 0</code>, with two threads:</p>
+        <p class="sched">A: load 0 &nbsp; B: load 0 &nbsp; A: store 1 &nbsp; B: store 1</p>
+        <p>Final value 1, not 2. It's the same pattern as the lost update on page 1, one level down.</p>
+      </div>
+      <div class="callout impl">
+        <span class="box-label">Be careful · in C++ a data race is undefined behaviour, not just a wrong number</span>
+        <p>The C++ standard makes any data race <em class="term">undefined behaviour</em> (UB): the program may do anything. For a container like <code>std::unordered_map</code>, an insert on one thread can trigger a rehash that frees the bucket array while another thread's <code>find</code> is walking it. That's a crash or silent memory corruption, not a lost count. "It didn't crash in my runs" is no evidence against UB.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s3">3. Mutexes and critical sections</h2>
+      <p>A <em class="term">mutex</em> (mutual-exclusion lock) is held by at most one thread at a time. Code that runs while holding it is a <em class="term">critical section</em>. C++ provides two RAII wrappers, which release the mutex automatically when they go out of scope:</p>
+<pre><code>std::mutex mtx;
+{
+    std::lock_guard&lt;std::mutex&gt; g(mtx);   // locked until end of scope, can't unlock early
+    counter++;
+}
+{
+    std::unique_lock&lt;std::mutex&gt; u(mtx);  // like lock_guard, but can unlock() early
+    ...                                     // and can be handed to a condition variable
+    u.unlock();
+}</code></pre>
+      <p>Database engineers call this kind of short-lived in-memory mutex a <em class="term">latch</em>, and reserve "lock" for the transaction-level locks of page 3. The terms keep the two apart. A latch is held for microseconds and never across a wait for another transaction. A lock can be held for seconds.</p>
+    </section>
+
+    <section>
+      <h2 id="s4">4. Self-deadlock and the recursive mutex</h2>
+      <p>A thread that tries to lock a <code>std::mutex</code> it already holds waits for itself forever (formally, this is undefined behaviour). A <code>std::recursive_mutex</code> counts how many times its owner has locked it and releases only when that count returns to zero, so a method holding it can call another method that locks it again.</p>
+      <div class="callout impl">
+        <span class="box-label">In the code · one recursive mutex, and one latent self-deadlock</span>
+        <p><code>ResourceAllocationGraph</code> uses a <code>recursive_mutex</code> because <code>addAssignmentEdge</code> calls <code>removeRequestEdge</code>, and both lock it. <code>Logger</code> uses a plain <code>std::mutex</code>, but <code>Logger::setLogLevel</code> and <code>setConsoleOutput</code> lock it and then call <code>info()</code>, which locks it again (<code>src/logger.cpp:192–202</code>). Either call would hang its thread. Nothing in the repo calls them, so it never happens in practice.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s5">5. Condition variables</h2>
+      <p>A thread that must wait until some shared state changes shouldn't spin in a loop checking. A <em class="term">condition variable</em> lets it sleep until another thread signals that something changed. The predicate form is the one to use:</p>
+<pre><code>std::unique_lock&lt;std::mutex&gt; lk(mtx);
+cv.wait(lk, [&amp;]{ return ready; });   // same as: while (!ready) cv.wait(lk);
+
+// another thread, after changing `ready` under mtx:
+cv.notify_all();                       // or notify_one()</code></pre>
+      <ul>
+        <li><code>wait</code> atomically releases the mutex and sleeps. When woken, it re-acquires the mutex and re-checks the predicate. It returns only once the predicate is true, with the mutex held.</li>
+        <li><em class="term">Spurious wakeups</em> (waking with nothing changed) are allowed, which is why the predicate is re-checked in a loop.</li>
+        <li><code>wait_for(lk, duration, pred)</code> also gives up after the duration and returns the predicate's final value. It's the natural tool for a lock timeout.</li>
+        <li><code>notify_one</code> wakes one waiter. <code>notify_all</code> wakes every thread waiting on that condition variable.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2 id="s6">6. The thundering herd</h2>
+      <p>If every waiter shares one condition variable and every state change calls <code>notify_all</code>, each change wakes <em>all</em> waiters. They then take turns re-acquiring the one mutex, re-check their predicates, and nearly all go back to sleep. This is the <em class="term">thundering herd</em>.</p>
+      <div class="eq">
+        \[ \text{wakeups} = R \times W \]
+        <p class="note">\(R\) is the number of notifications (for example, lock releases) and \(W\) is the number of threads waiting at each one. Each wakeup costs a context switch plus one pass through the critical section.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example</span>
+        <p>With \(W = 500\) blocked threads and \(R = 100\) releases, that's \(100 \times 500 = 50{,}000\) wakeups, each serialized on the same mutex, even if each release could unblock only one or two of the waiters.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s7">7. Never block while holding a mutex, and the gap that creates</h2>
+      <p>If a thread keeps holding a mutex while it waits for something slow, every other thread that needs that mutex stops too. So code checks the state under the mutex, <em>unlocks</em>, then waits. Between the unlock and the next lock, other threads can change the state. This check-then-act gap is called <em class="term">TOCTOU</em> (time of check to time of use). Code must re-validate after re-acquiring the mutex, because the world may have moved on.</p>
+      <p>A second consequence: a raw pointer read from a map under a mutex isn't protected once the mutex is released. Another thread may erase the entry and destroy the object, leaving a <em class="term">dangling pointer</em>.</p>
+    </section>
+
+    <section>
+      <h2 id="s8">8. Atomics and barriers</h2>
+      <ul>
+        <li><code>std::atomic&lt;int&gt;</code>: single operations like <code>++</code>, <code>load</code> and <code>store</code> are indivisible, which is enough for counters and flags without a mutex. A sequence of atomic operations is <em>not</em> atomic as a whole.</li>
+        <li><code>std::barrier</code> (header <code>&lt;barrier&gt;</code>, provided by the libc++ used in this audit): constructed with a count \(k\). Each thread calls <code>arrive_and_wait()</code>, and all \(k\) threads are released together once the \(k\)-th arrives. The project uses it so all 1,000 transaction threads start at the same instant, which maximizes contention.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2 id="s9">9. Member initialization order, and why UB can "work" on one OS</h2>
+      <p>C++ constructs a class's data members in the order they are <strong>declared</strong> in the class, whatever order the constructor's initializer list uses. If member <code>b</code> is declared before member <code>a</code> but is initialized using <code>a</code>, then <code>b</code> uses an <code>a</code> that doesn't exist yet. That's undefined behaviour. Clang and GCC warn about the mismatched order (<code>-Wreorder</code> / <code>-Wreorder-ctor</code>).</p>
+<pre><code>struct S {
+    Logger&amp; ref_user;  // declared first  -&gt; constructed first
+    Logger  log;       // declared second -&gt; constructed second
+    S() : log("x.log"), ref_user(log) {}   // list order is ignored
+};</code></pre>
+      <div class="worked">
+        <span class="box-label">Worked example · why the same bug crashes on macOS and not (likely) on Linux</span>
+        <p>An object with static storage (a global) is zero-filled before its constructor runs. If code locks a <code>std::mutex</code> member before that member is constructed, the mutex's bytes are all zero. On Linux/glibc, the "unlocked mutex" initializer is itself all zeros, so the lock usually just works by luck. On macOS, a valid mutex must carry a non-zero signature, so <code>pthread_mutex_lock</code> returns <code>EINVAL</code> and libc++ throws <code>std::system_error: mutex lock failed: Invalid argument</code>. That's the exact message the project's harness prints at startup on macOS (<a href="05-part-transaction-and-manager.html#s7">Part 1, section 7</a>).</p>
+      </div>
+    </section>
+
+    <div class="recap"><span class="box-label">Carried forward</span>threads and cores (§1) · data races are UB (§2) · mutex, lock_guard/unique_lock, and latch vs lock (§3) · self-deadlock and recursive_mutex (§4) · condition variables: wait with a predicate, spurious wakeups, wait_for, notify_one/all (§5) · the thundering herd, \(R \times W\) (§6) · unlock before blocking, the TOCTOU gap, dangling pointers (§7) · atomics and std::barrier (§8) · declaration-order construction and platform-dependent UB (§9).</div>
+  </main>
+  <div class="pager">
+    <a href="01-transactions-and-serializability.html"><span class="lbl">Back</span>← Transactions and serializability</a>
+    <a class="next" href="03-locks-and-2pl.html"><span class="lbl">Next</span>Locks and two-phase locking →</a>
+  </div>
+</div>
+</body>
+</html>

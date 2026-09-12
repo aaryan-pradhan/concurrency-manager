@@ -16,8 +16,9 @@
 #include <iomanip> // For formatting in metrics file
 #include "../include/concurrency_manager.h"
 
-// Maps data items to resource IDs
+// Maps data items to resource IDs (shared by all transaction threads, guarded by resourceIdMutex)
 std::map<std::string, int> dataItemToResourceId;
+std::mutex resourceIdMutex;
 
 int cnt = 1;
 
@@ -52,6 +53,7 @@ std::atomic<int> restartedTxnCount(0);
 // Get or create resource ID for a data item
 int getResourceId(const std::string &dataItem)
 {
+    std::lock_guard<std::mutex> lock(resourceIdMutex);
     if (dataItemToResourceId.find(dataItem) == dataItemToResourceId.end())
     {
         // Create a new resource ID
@@ -424,6 +426,15 @@ void runTransaction(int txnNum, const std::vector<Operation> &operations, int pr
                 if (cm.commitTransaction(txnId)) {
                     recordTxnEnd(txnNum, true);
                     wasAborted = false;
+                } else if (cm.getTransactionState(txnId) == TransactionState::ABORTED) {
+                    // Chosen as a deadlock victim after its last lock was granted: restart, don't exit uncommitted
+                    deadlockDetected = true;
+                    wasAborted = true;
+                    recordTxnRestart(txnNum);
+                    i = -1;
+                    priority++;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(calculateBackoff(priority)));
+                    break;
                 }
                 logRAGState(cm, txnNum, "committing");
                 break;

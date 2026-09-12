@@ -2,27 +2,21 @@
 #include <unordered_map>
 
 Transaction::Transaction(int id, const std::string& meta,int priority)
-    : txnId(id), 
-      state(TransactionState::GROWING), 
-      startTime(std::chrono::system_clock::now()), 
+    : txnId(id),
+      state(TransactionState::GROWING),
+      startTime(std::chrono::system_clock::now()),
       metadata(meta),
       priority(priority) {
-    // Register this transaction in the static map
-    RegisterTransaction(this);
-}
-
-// Destructor
-Transaction::~Transaction() {
-    // Unregister this transaction from the static map
-    UnregisterTransaction(txnId);
+    // Registration is done by the owner (ConcurrencyManager) once the object is
+    // held by a shared_ptr, so lookups can never observe a destroyed transaction.
 }
 
 bool Transaction::acquireLock(int resourceId) {
     // In 2PL, locks can only be acquired in the GROWING phase
-    if (state != TransactionState::GROWING) {
+    if (state.load() != TransactionState::GROWING) {
         return false;
     }
-    
+
     locksHeld.insert(resourceId);
     return true;
 }
@@ -32,52 +26,54 @@ bool Transaction::releaseLock(int resourceId) {
     if (locksHeld.find(resourceId) == locksHeld.end()) {
         return false;
     }
-    
-    // In strict 2PL we only release locks after commit/abort,
-    // but we implement the general case here
-    if (state == TransactionState::GROWING) {
-        // Auto-transition to SHRINKING phase
-        beginShrinking();
-    }
-    
-    if (state != TransactionState::COMMITTED && 
-        state != TransactionState::ABORTED && 
-        state != TransactionState::SHRINKING) {
+
+    // Releasing any lock ends the growing phase (basic 2PL)
+    beginShrinking();
+
+    TransactionState s = state.load();
+    if (s != TransactionState::COMMITTED &&
+        s != TransactionState::ABORTED &&
+        s != TransactionState::SHRINKING) {
         return false;
     }
-    
+
     locksHeld.erase(resourceId);
     return true;
 }
 
 bool Transaction::commit() {
-    // Can only commit if not already committed or aborted
-    if (state == TransactionState::COMMITTED || state == TransactionState::ABORTED) {
-        return false;
+    // Can only commit from GROWING or SHRINKING; compare-and-swap so a concurrent
+    // abort by the deadlock detector and a commit cannot both succeed
+    TransactionState s = state.load();
+    while (s == TransactionState::GROWING || s == TransactionState::SHRINKING) {
+        if (state.compare_exchange_weak(s, TransactionState::COMMITTED)) {
+            return true;
+        }
     }
-    
-    state = TransactionState::COMMITTED;
-    return true;
+    return false;
 }
 
-void Transaction::abort() {
-    state = TransactionState::ABORTED;
+bool Transaction::abort() {
+    TransactionState s = state.load();
+    while (s != TransactionState::COMMITTED) {
+        if (s == TransactionState::ABORTED || state.compare_exchange_weak(s, TransactionState::ABORTED)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Transaction::beginShrinking() {
-    if (state == TransactionState::GROWING) {
-        state = TransactionState::SHRINKING;
-        return true;
-    }
-    return false;  // Can't transition to SHRINKING from non-GROWING states
+    TransactionState expected = TransactionState::GROWING;
+    return state.compare_exchange_strong(expected, TransactionState::SHRINKING);
 }
 
 bool Transaction::isInGrowingPhase() const {
-    return state == TransactionState::GROWING;
+    return state.load() == TransactionState::GROWING;
 }
 
 TransactionState Transaction::getState() const {
-    return state;
+    return state.load();
 }
 
 int Transaction::getId() const {
@@ -106,23 +102,30 @@ long Transaction::getAgeMillis() const {
         now - startTime).count();
 }
 
-// Initialize the static map
-std::unordered_map<txn_id_t, Transaction*> Transaction::active_transactions_;
+// Initialize the static registry
+std::unordered_map<txn_id_t, std::shared_ptr<Transaction>> Transaction::active_transactions_;
+std::mutex Transaction::registry_mutex_;
 
 // Register a new transaction
-void Transaction::RegisterTransaction(Transaction* txn) {
+void Transaction::RegisterTransaction(const std::shared_ptr<Transaction>& txn) {
     if (txn != nullptr) {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
         active_transactions_[txn->getId()] = txn;
     }
 }
 
 // Remove a transaction from the registry
-void Transaction::UnregisterTransaction(txn_id_t txn_id) {
-    active_transactions_.erase(txn_id);
+void Transaction::UnregisterTransaction(txn_id_t txn_id, const Transaction* expected) {
+    std::lock_guard<std::mutex> lock(registry_mutex_);
+    auto it = active_transactions_.find(txn_id);
+    if (it != active_transactions_.end() && (expected == nullptr || it->second.get() == expected)) {
+        active_transactions_.erase(it);
+    }
 }
 
 // Get a transaction by ID
-Transaction* Transaction::GetTransaction(txn_id_t txn_id) {
+std::shared_ptr<Transaction> Transaction::GetTransaction(txn_id_t txn_id) {
+    std::lock_guard<std::mutex> lock(registry_mutex_);
     auto it = active_transactions_.find(txn_id);
     if (it != active_transactions_.end()) {
         return it->second;

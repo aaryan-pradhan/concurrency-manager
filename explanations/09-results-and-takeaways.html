@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Results and takeaways · Concurrency Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Wrap-up · Results</span></div>
+    <span class="stage-tag">Wrap-up</span>
+    <h1 class="title">All results, and what they support</h1>
+    <p class="dek">Every number the audit produced, with the conditions it was measured under: which comparisons are fair, how big run-to-run noise is, what the evidence supports, what it contradicts, and what to fix first.</p>
+  </header>
+  <main>
+
+    <div class="recap"><span class="box-label">Uses</span>the precedence-graph test from <a href="01-transactions-and-serializability.html#s7">page 1, section 7</a> · throughput and thrashing from <a href="04-deadlocks-and-wait-for-graphs.html#s10">page 4, section 10</a> · the reordered build from <a href="05-part-transaction-and-manager.html#s7">Part 1, section 7</a> · the upgrade-gap replay from <a href="06-part-lock-manager.html#s6">Part 2, section 6</a> · tail victims from <a href="07-part-deadlock-detector.html#s4">Part 3, section 4</a> · the metric definitions and restart distributions from <a href="08-part-harness-and-metrics.html#s5">Part 4, sections 5–6</a>.</div>
+
+    <section>
+      <div class="spec-quote">
+        <span class="box-label">docs/18-metrics-and-log-files.md</span>
+        <blockquote>"How to use this file in practice: if you want to demonstrate that deadlock detection actually works, generate a deadlock-heavy workload (tests/generate_diff.py), run tests/test_deadlock_detection.cpp against it, and look for Restarts > 0 on individual rows and Deadlock Detected: Yes in the summary — that's direct evidence the background DeadlockDetector fired and recovered."</blockquote>
+      </div>
+      <p>That test is necessary but weak. It shows that detection fired, not that isolation held or that concurrency paid off. This page adds those two checks.</p>
+    </section>
+
+    <section>
+      <h2 id="s1">1. How every number here was produced</h2>
+      <div class="callout impl">
+        <span class="box-label">Measurement conditions · read before quoting anything</span>
+        <ul>
+          <li><strong>Where:</strong> the audit machine. Apple M-series, 8 logical cores, macOS (Darwin 25.6), Apple clang 17, <code>-std=c++23</code>, <code>-O0</code> (matching the makefile, which passes no optimization flag) unless marked -O2.</li>
+          <li><strong>What code:</strong> the repo, with only the <code>ConcurrencyManager</code> member order fixed. The unmodified repo crashes at startup on macOS (Part 1, section 7).</li>
+          <li><strong>Serial baseline:</strong> the same harness and engine, except each transaction thread is joined immediately after it starts (barrier size 1), so transactions run one at a time. The detector thread, logging and RAG file writes are unchanged.</li>
+          <li><strong>Runs:</strong> two per configuration, one at -O2. The repo contains no metrics output. <code>transaction_metrics.txt</code> is git-ignored and was never committed, so none of these numbers existed before the audit.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s2">2. Every run</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Mode</th><th class="num">Committed</th><th class="num">Restarts</th><th class="num">Harness success rate</th><th class="num">Throughput (txn/s)</th><th class="num">Avg latency (ms)</th></tr></thead>
+        <tbody>
+          <tr><td><code>test.txt</code></td><td>concurrent #1</td><td class="num">1,000</td><td class="num">2,843</td><td class="num">26.0%</td><td class="num">107.47</td><td class="num">3,529.36</td></tr>
+          <tr><td><code>test.txt</code></td><td>concurrent #2</td><td class="num">1,000</td><td class="num">2,953</td><td class="num">25.3%</td><td class="num">96.00</td><td class="num">4,371.34</td></tr>
+          <tr><td><code>test.txt</code></td><td>concurrent, -O2</td><td class="num">1,000</td><td class="num">3,075</td><td class="num">24.5%</td><td class="num">84.96</td><td class="num">3,898.96</td></tr>
+          <tr><td><code>test.txt</code></td><td>serial #1 / #2</td><td class="num">1,000</td><td class="num">0</td><td class="num">100%</td><td class="num">1,802.35 / 1,852.83</td><td class="num">0.19</td></tr>
+          <tr><td><code>test.txt</code></td><td>serial, -O2</td><td class="num">1,000</td><td class="num">0</td><td class="num">100%</td><td class="num">2,305.79</td><td class="num">–</td></tr>
+          <tr><td><code>dead_test.txt</code></td><td>concurrent #1</td><td class="num">1,000</td><td class="num">6,701</td><td class="num">13.0%</td><td class="num">29.22</td><td class="num">25,087.49</td></tr>
+          <tr><td><code>dead_test.txt</code></td><td>concurrent #2</td><td class="num">1,000</td><td class="num">6,731</td><td class="num">12.9%</td><td class="num">27.12</td><td class="num">24,943.61</td></tr>
+          <tr><td><code>dead_test.txt</code></td><td>serial #1 / #2</td><td class="num">1,000</td><td class="num">0</td><td class="num">100%</td><td class="num">1,967.67 / 1,975.79</td><td class="num">0.17</td></tr>
+          <tr><td><code>test4 / test5 / test1 / test6</code></td><td>concurrent</td><td class="num">2 / 3 / 2 / 2</td><td class="num">1 / 2 / 1 / 0</td><td class="num">66.7 / 60.0 / 66.7 / 100%</td><td class="num">5.29 / 5.79 / 5.25 / 9.68</td><td class="num">138 / 249 / 141 / 0.37</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>"–" means the audit didn't keep that line for the run.</p>
+    </section>
+
+    <section>
+      <h2 id="s3">3. Concurrent vs serial throughput</h2>
+      <div class="figure">
+        <svg viewBox="0 0 600 190" width="600" height="190" role="img" aria-label="Bar chart of throughput: test.txt serial 1802, concurrent 107; dead_test serial 1968, concurrent 29.">
+          <text x="10" y="34" font-size="12" fill="var(--ink)">test.txt serial</text>
+          <rect x="150" y="22" width="366" height="18" rx="3" fill="var(--good)"/>
+          <text x="522" y="36" font-size="12" fill="var(--ink)">1,802</text>
+          <text x="10" y="70" font-size="12" fill="var(--ink)">test.txt concurrent</text>
+          <rect x="150" y="58" width="22" height="18" rx="3" fill="var(--impl)"/>
+          <text x="178" y="72" font-size="12" fill="var(--ink)">107</text>
+          <text x="10" y="120" font-size="12" fill="var(--ink)">dead_test serial</text>
+          <rect x="150" y="108" width="400" height="18" rx="3" fill="var(--good)"/>
+          <text x="556" y="122" font-size="12" fill="var(--ink)">1,968</text>
+          <text x="10" y="156" font-size="12" fill="var(--ink)">dead_test concurrent</text>
+          <rect x="150" y="144" width="6" height="18" rx="2" fill="var(--impl)"/>
+          <text x="162" y="158" font-size="12" fill="var(--ink)">29</text>
+          <text x="150" y="184" font-size="11" fill="var(--ink-soft)">committed transactions per second, run #1, -O0, same bar scale</text>
+        </svg>
+        <figcaption>Serial execution of the same 1,000 transactions beats 1,000 concurrent threads on both workloads.</figcaption>
+      </div>
+      <div class="eq">
+        \[ \frac{\text{serial}}{\text{concurrent}}:\quad \frac{1802.35}{107.47} = 16.77 \quad \frac{1852.83}{96.00} = 19.30 \quad \frac{1967.67}{29.22} = 67.34 \quad \frac{1975.79}{27.12} = 72.85 \quad \frac{2305.79}{84.96} = 27.14\ (\text{-O2}) \]
+        <p class="note">Pairs are run #1 with run #1 and run #2 with run #2. Concurrent throughput is 5.2–6.0% of serial on <code>test.txt</code> and 1.4–1.5% on <code>dead_test.txt</code>.</p>
+      </div>
+      <p><strong>Why.</strong> A "transaction" here does nothing except lock calls and logging, so there's no independent work for parallel threads to share out. Concurrency adds only costs: lock waits, 100 ms detection delay, thousands of aborts, and backoff sleeps of seconds per transaction (Part 4, section 4). Likely further contributors, none measured separately: tail and phantom aborts (Part 3), one global latch with process-wide <code>notify_all</code> (Part 2, sections 1 and 5), and RAG file writes inside the critical path (Part 2, section 7). That's data-contention thrashing (page 4, section 10) in its purest form.</p>
+      <div class="callout impl">
+        <span class="box-label">Be careful · what a "speedup over single-threaded" would require</span>
+        <p>No single-threaded baseline exists in the repo, and on both of its workloads the audit's baseline is far faster. A multi-threaded speedup could only appear on a workload where each operation spends real time outside the lock manager (simulated I/O, think time) and conflicts are rare, and nothing like that was built or measured.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s4">4. Commit rate</h2>
+      <p>In all 5 concurrent 1,000-transaction runs, all 1,000 transactions committed eventually: 0 rows without a commit. That's \(1000/1000 = 100\%\) <em>eventual</em> commit. It came from retrying, not from avoiding aborts. The aborts were 2,843–3,075 (<code>test.txt</code>) and 6,701–6,731 (<code>dead_test.txt</code>), the harness's own success rate was 12.9–26.0%, and on <code>dead_test.txt</code> no transaction committed with fewer than 5 aborts (Part 4, section 6). The code also contains an unobserved path for finishing uncommitted (Part 4, section 7).</p>
+    </section>
+
+    <section>
+      <h2 id="s5">5. Isolation</h2>
+      <div class="callout result">
+        <span class="box-label">Result · log replay (Part 2, section 6)</span>
+        <p><strong>Incompatible locks held together: 0</strong> in every log. <strong>Committed upgraders that another transaction's X lock overtook in the upgrade gap: 4 per <code>test.txt</code> run</strong> (2 runs), each giving a precedence-graph cycle (one traced by hand). <code>dead_test.txt</code>: 0, because it has no upgrades.</p>
+      </div>
+      <p>So the lock table enforces compatibility, but the engine doesn't guarantee serializability, and the counterexamples come from the project's own random workload. Separately, the unlatched transaction registry and <code>state</code> field are data races (Part 1, section 3), which are undefined behaviour even when a run finishes cleanly.</p>
+    </section>
+
+    <section>
+      <h2 id="s6">6. Which comparisons are fair</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Comparison</th><th>Same measurement?</th><th>What else differs</th><th>Verdict</th></tr></thead>
+        <tbody>
+          <tr><td>Concurrent vs serial, same file</td><td>yes: same binary, metric code, machine</td><td>only interleaving (hence restarts)</td><td>fair for these workloads, and the gap (≥ 16×) dwarfs run-to-run noise</td></tr>
+          <tr><td><code>test.txt</code> vs <code>dead_test.txt</code> throughput</td><td>yes</td><td>workload: items, write share, built-in deadlocks</td><td>compares workloads, not engines</td></tr>
+          <tr><td>-O0 vs -O2, concurrent</td><td>yes</td><td>one -O2 run, restarts 3,075 vs 2,843/2,953</td><td>within noise; don't conclude either is faster</td></tr>
+          <tr><td>Small files vs 1,000-txn files</td><td>no: the fixed 200 ms sleep dominates 0.2–0.5 s runs</td><td>everything</td><td>not comparable</td></tr>
+          <tr><td>Audit numbers vs any number on a CV</td><td>unknown</td><td>OS, compiler, flags, which build, whether the startup bug was present</td><td>can't be reconciled without the original measurement</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s7">7. How much noise?</h2>
+      <div class="eq">
+        \[ \text{one transaction} = \frac{1}{1000} = 0.1 \text{ percentage points of commit rate} \]
+        <p class="note">This is the resolution of any rate over 1,000 transactions.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · run 1 vs run 2 (relative change)</span>
+        <p><code>test.txt</code> throughput: \((96.00 - 107.47)/107.47 = -10.7\%\). Restarts: \((2953 - 2843)/2843 = +3.9\%\). <code>dead_test.txt</code> throughput: \((27.12 - 29.22)/29.22 = -7.2\%\). Restarts: \((6731 - 6701)/6701 = +0.45\%\). Serial throughput moved \(+2.8\%\) (\(1852.83/1802.35\)) and \(+0.4\%\) (\(1975.79/1967.67\)).</p>
+        <p>So concurrent throughput varies about ±10% between identical runs. A 16–73× gap is real. The -O2 run's 84.96 txn/s is 11.5% below run 2's 96.00, which is roughly one noise-width, so it doesn't show a difference.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s8">8. What the evidence supports, and what it doesn't</h2>
+      <h3>Supported</h3>
+      <ul>
+        <li>A C++ (built as C++23) lock manager with shared/exclusive locks, upgrades and condition-variable waiting, driven by 1,000 concurrent threads per test file (<a href="06-part-lock-manager.html">Part 2</a>, <a href="08-part-harness-and-metrics.html#s3">Part 4, section 3</a>).</li>
+        <li>Locks held until commit/abort on every measured workload, i.e. strict/rigorous behaviour, except during upgrade waits (<a href="05-part-transaction-and-manager.html#s6">Part 1, section 6</a>).</li>
+        <li>Background wait-for-graph deadlock detection with DFS, priority-based victim abort, restart with priority +1 and exponential backoff with jitter. Every run finished, and all 1,000 transactions committed eventually (<a href="07-part-deadlock-detector.html#s8">Part 3, section 8</a>).</li>
+        <li>Instrumentation: per-transaction restarts and latency, RAG trace logs, and two workload generators.</li>
+      </ul>
+      <h3>Not supported, or contradicted</h3>
+      <ul>
+        <li><strong>ACID compliance:</strong> no data, undo or log. Isolation only (<a href="05-part-transaction-and-manager.html#s8">Part 1, section 8</a>).</li>
+        <li><strong>Guaranteed serializability:</strong> non-serializable committed schedules found (section 5).</li>
+        <li><strong>Any throughput speedup over single-threaded:</strong> the same-harness serial run was 16.8–72.9× faster (section 3).</li>
+        <li><strong>A high commit rate without qualification:</strong> 100% eventual, 12.9–26.0% by the harness's own metric (section 4).</li>
+        <li><strong>Priority <em>scheduling</em>, or proven starvation prevention:</strong> priorities pick victims only, grants ignore them, and starvation wasn't measured (<a href="07-part-deadlock-detector.html#s6">Part 3, section 6</a>).</li>
+        <li><strong>Eliminating deadlocks:</strong> they were detected and broken thousands of times, not prevented.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2 id="s9">9. What would make it correct, and the comparison clean</h2>
+      <ol>
+        <li><strong>Fix the member order</strong> in <code>ConcurrencyManager</code> (declare <code>logger</code>, <code>rag</code>, then <code>lockManager</code>) and build with <code>-Wall -Werror</code>. Removes UB at startup.</li>
+        <li><strong>Keep the S lock during an upgrade wait.</strong> Restores 2PL, and with it serializability (<a href="06-part-lock-manager.html#s6">Part 2, section 6</a>).</li>
+        <li><strong>Latch or eliminate the static registry.</strong> Give <code>Transaction</code> an <code>std::atomic</code> state, look up through a mutex-protected map owned by the manager, and hold <code>shared_ptr</code>s. Removes data races.</li>
+        <li><strong>Choose victims from the cycle only</strong> (<a href="07-part-deadlock-detector.html#s4">Part 3, section 4</a>). Fewer aborts.</li>
+        <li><strong>Return <code>true</code> for pre-granted waits</strong> (<a href="06-part-lock-manager.html#s4">Part 2, section 4</a>). Fixes the metrics and <code>locksHeld</code>.</li>
+        <li><strong>Add a serializability test:</strong> replay the grant log into a precedence graph and assert that it's acyclic, as the audit did by hand.</li>
+        <li><strong>Take I/O out of the critical path</strong> (RAG snapshots off by default, buffered logging), scan the lock table instead of IDs 0–9,999, and use per-resource condition variables with a FIFO queue.</li>
+        <li><strong>Benchmark honestly:</strong> a workload with simulated per-operation work, 1/2/4/8/16/… threads, a serial baseline in the same binary, and ≥ 5 runs per point with the spread reported.</li>
+      </ol>
+    </section>
+
+    <div class="recap"><span class="box-label">Carried forward</span>this is the last page. The CV review and the interview Q&amp;A use sections 3–8 as their evidence base.</div>
+  </main>
+  <div class="pager">
+    <a href="08-part-harness-and-metrics.html"><span class="lbl">Back</span>← Part 4 · Harness, workloads and metrics</a>
+    <a class="next" href="index.html"><span class="lbl">Next</span>Contents →</a>
+  </div>
+</div>
+</body>
+</html>

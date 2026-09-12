@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <fstream>
 #include <string>
 #include <mutex>
@@ -28,8 +29,8 @@ class Logger {
 private:
     std::ofstream logFile;       // File stream for persistent logging
     std::mutex mtx;              // Mutex for thread safety
-    bool consoleOutput;          // Whether to output logs to console
-    LogLevel minLevel;           // Minimum level to log
+    std::atomic<bool> consoleOutput;   // Whether to output logs to console
+    std::atomic<LogLevel> minLevel;    // Minimum level to log
     
     /**
      * @brief Gets current timestamp as a formatted string
@@ -91,6 +92,11 @@ public:
      * @param level The minimum level of messages to log
      */
     void setLogLevel(LogLevel level);
+
+    /**
+     * @brief Whether messages at this level would be written (lets callers skip building them)
+     */
+    bool isEnabled(LogLevel level) const;
     
     /**
      * @brief Enable or disable console output

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Part 4: Harness, workloads and metrics · Concurrency Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Part 4 · Harness and metrics</span></div>
+    <span class="stage-tag">Part 4</span>
+    <h1 class="title">The harness: workloads, restarts and what the metrics measure</h1>
+    <p class="dek">The program that turns a text schedule into 1,000 threads, restarts deadlock victims with growing backoff, and writes <code>transaction_metrics.txt</code>. Every metric is defined here exactly as the code computes it, since the CV's numbers would have to come from this file.</p>
+  </header>
+  <main>
+
+    <div class="recap"><span class="box-label">Uses</span>threads, barriers and data races from <a href="02-threads-mutexes-condvars.html#s1">page 2, sections 1</a>, <a href="02-threads-mutexes-condvars.html#s2">2</a>, <a href="02-threads-mutexes-condvars.html#s8">8</a> · upgrades from <a href="03-locks-and-2pl.html#s3">page 3, section 3</a> · aging and backoff with jitter from <a href="04-deadlocks-and-wait-for-graphs.html#s8">page 4, sections 8–9</a> · throughput and thrashing from <a href="04-deadlocks-and-wait-for-graphs.html#s10">page 4, section 10</a> · restart under the same ID from <a href="05-part-transaction-and-manager.html#s4">Part 1, section 4</a> · inflated lock failures from <a href="06-part-lock-manager.html#s4">Part 2, section 4</a> · victim abort from <a href="07-part-deadlock-detector.html#s5">Part 3, section 5</a>.</div>
+
+    <section>
+      <div class="spec-quote">
+        <span class="box-label">docs/17-test-harnesses.md · and docs/16-test-file-language.md</span>
+        <blockquote>"tests/test_deadlock_detection.cpp — the actual, working, feature-complete harness. This is the most sophisticated program in the repository, and it's the one the makefile's run target actually builds and runs (against tests/test4.txt)." · "tests/generate_diff.py […] deliberately creates small batches of transactions that each touch the same 3 items, but in alternating order […] a textbook way to manufacture circular wait conditions on purpose."</blockquote>
+      </div>
+      <p>"Feature-complete" covers the restart loop (section 4) and the metrics report (section 5). "Circular wait conditions on purpose" is the Coffman condition from page 4, section 1. Section 2 checks how the generated file actually behaves.</p>
+    </section>
+
+    <section>
+      <h2 id="s1">1. The schedule language, and how it's grouped</h2>
+      <p>Lines are <code>START T&lt;n&gt;</code>, <code>R&lt;n&gt;(item)</code>, <code>W&lt;n&gt;(item)</code>, <code>C&lt;n&gt;</code>, <code>A&lt;n&gt;</code> and <code>RELEASE T&lt;n&gt;(item)</code>, with <code>//</code> comments. <code>parseTestFile</code> collects every line into a per-transaction list keyed by <code>n</code>. The file's global line order is thrown away, and each list runs on its own thread from top to bottom. Item names map to resource IDs 1, 2, 3, … in the order threads first touch them (<code>getResourceId</code>).</p>
+      <div class="callout impl">
+        <span class="box-label">In the code · the item map is itself a data race</span>
+        <p><code>dataItemToResourceId</code> is a global <code>std::map</code> and <code>cnt</code> a global <code>int</code>. Worker threads call <code>getResourceId</code>, which inserts into both with no mutex, right after the barrier releases all 1,000 threads at once. That's page 2, section 2's undefined behaviour in the harness itself. A corrupted map could give one item two IDs, which would silently remove the conflict between its readers and writers.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s2">2. The workloads</h2>
+      <div class="tbl-wrap">
+      <table>
+        <caption>Computed from the files by the audit</caption>
+        <thead><tr><th>File</th><th class="num">Txns</th><th class="num">Ops</th><th>Ops per txn</th><th class="num">Items</th><th class="num">Writes</th><th>Same item twice in one txn</th></tr></thead>
+        <tbody>
+          <tr><td><code>test.txt</code></td><td class="num">1,000</td><td class="num">3,515</td><td>3 (485 txns) or 4 (515)</td><td class="num">26</td><td class="num">684 (19.5%)</td><td>176 txns, 26 of them read-then-write (upgrades)</td></tr>
+          <tr><td><code>dead_test.txt</code></td><td class="num">1,000</td><td class="num">3,000</td><td>3: R, R, W</td><td class="num">12</td><td class="num">1,000 (33.3%)</td><td>none</td></tr>
+          <tr><td><code>test1/4/5/6.txt</code></td><td class="num">2/2/3/2</td><td class="num">9/4/9/4</td><td></td><td class="num">3/2/3/4</td><td></td><td>test1: upgrades</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>\(684 / 3{,}515 = 0.1946\), so 19.5% of operations are writes. The generator's <code>read_ratio=0.8</code> comment says "70% reads", but the argument is 0.8, and the file matches 0.8.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · why dead_test.txt deadlocks every batch</span>
+        <p><code>generate_diff.py</code> picks 3 items per batch of 10 and sets <code>ops_per_transaction=4</code>, so the first 2 items are read and the rest (just 1) written. That's R, R, W, not the two reads plus two writes the name suggests. Batch 1:</p>
+        <p class="sched">T1, T3, T5, T7, T9: R(K) R(B) W(J) &nbsp;&nbsp; T2, T4, T6, T8, T10: R(J) R(B) W(K)</p>
+        <p>Every odd transaction holds \(S(K)\) and needs \(X(J)\). Every even one holds \(S(J)\) and needs \(X(K)\). Once all ten hold their first S lock, each odd transaction waits on all five evens and vice versa: a complete bipartite wait graph with \(5 \times 5 \times 2 = 50\) edges, full of cycles. All 100 batches follow this pattern (checked by script), and they share a pool of only 12 items, so batches collide with each other too.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s3">3. One thread per transaction, released together</h2>
+<pre><code>// tests/test_deadlock_detection.cpp:571-592
+startBarrier = std::make_shared&lt;std::barrier&lt;&gt;&gt;(numTransactions);
+for (const auto &amp;ops : transactionOperations)
+    threads.emplace_back(runTransaction, txnNum, ops, 1);   // priority starts at 1
+for (auto &amp;t : threads) t.join();
+std::this_thread::sleep_for(std::chrono::milliseconds(100 * 2));
+writeTransactionMetricsToFile(testFile, testStartTime);</code></pre>
+      <p>Each thread calls <code>startBarrier-&gt;arrive_and_wait()</code> first, so on the 1,000-transaction files 1,000 threads start their first operation together. That's the "1,000 threads" in the project's story, plus the detector and main threads. It maximizes contention on purpose, on an 8-core machine (page 2, section 1).</p>
+    </section>
+
+    <section>
+      <h2 id="s4">4. Restart with aging and backoff</h2>
+      <p>After every read or write, the thread checks whether its transaction was aborted. If so, it records a restart, raises its priority, sleeps, and restarts from <code>START</code> under the same ID (Part 3, section 6 shows the code):</p>
+<pre><code>// tests/test_deadlock_detection.cpp:306-322
+int calculateBackoff(int retryCount) {
+    int baseBackoff = 20, maxBackoff = 5000;
+    int backoff = std::min(baseBackoff * (1 &lt;&lt; retryCount), maxBackoff);
+    int jitter = (std::rand() % 60) - 30;           // -30 .. +29
+    backoff = backoff * (100 + jitter) / 100;
+    return std::max(backoff, 5);
+}
+// called as calculateBackoff(priority) right after priority++</code></pre>
+      <div class="eq">
+        \[ b(p) = \Big\lfloor \min\big(20 \cdot 2^{p},\ 5000\big) \cdot \tfrac{100 + j}{100} \Big\rfloor, \qquad j \in \{-30, \ldots, 29\},\quad p = 1 + k \]
+        <p class="note">\(k\) is the restart number (1 for the first restart), so the first backoff uses \(p = 2\). The argument is named <code>retryCount</code> but receives the priority. \(j\) comes from <code>rand() % 60 - 30</code>. The floor is C++ integer division.</p>
+      </div>
+      <div class="tbl-wrap">
+      <table>
+        <caption>Backoff after the k-th restart</caption>
+        <thead><tr><th class="num">k</th><th class="num">p</th><th class="num">before jitter (ms)</th><th class="num">with jitter (ms)</th></tr></thead>
+        <tbody>
+          <tr><td class="num">1</td><td class="num">2</td><td class="num">80</td><td class="num">56 – 103</td></tr>
+          <tr><td class="num">2</td><td class="num">3</td><td class="num">160</td><td class="num">112 – 206</td></tr>
+          <tr><td class="num">3</td><td class="num">4</td><td class="num">320</td><td class="num">224 – 412</td></tr>
+          <tr><td class="num">4</td><td class="num">5</td><td class="num">640</td><td class="num">448 – 825</td></tr>
+          <tr><td class="num">5</td><td class="num">6</td><td class="num">1,280</td><td class="num">896 – 1,651</td></tr>
+          <tr><td class="num">6</td><td class="num">7</td><td class="num">2,560</td><td class="num">1,792 – 3,302</td></tr>
+          <tr><td class="num">7+</td><td class="num">8+</td><td class="num">5,000 (cap)</td><td class="num">3,500 – 6,450</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · cost of being aborted</span>
+        <p>Low end of the \(k = 1\) row: \(80 \times 70 / 100 = 56\). High end: \(80 \times 129 / 100 = 103.2 \to 103\). Capped row: \(5000 \times 129 / 100 = 6{,}450\) ms, so the "5 second maximum" is exceeded by jitter applied after the cap (page 4, section 9).</p>
+        <p>A transaction restarted 5 times sleeps a base total of \(80 + 160 + 320 + 640 + 1280 = 2{,}480\) ms, between \(56 + 112 + 224 + 448 + 896 = 1{,}736\) and \(103 + 206 + 412 + 825 + 1{,}651 = 3{,}197\) ms with jitter. After 8 restarts the base total is \(2{,}480 + 2{,}560 + 5{,}000 + 5{,}000 = 15{,}040\) ms, and that's sleep alone, before any lock waits.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s5">5. The metrics, exactly as computed</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Metric</th><th>Code</th><th>What it really counts</th></tr></thead>
+        <tbody>
+          <tr><td>Transactions Completed</td><td><code>completedTxnCount++</code> on a successful commit</td><td>committed transactions</td></tr>
+          <tr><td>Transactions Restarted</td><td><code>restartedTxnCount++</code> per abort-and-retry</td><td>deadlock-victim aborts</td></tr>
+          <tr><td>Transaction Success Rate</td><td>\(\dfrac{100 \cdot \text{completed}}{\text{completed} + \text{restarted} + \text{aborted}}\)</td><td>commits as a share of all commit and abort events, so every restart lowers it</td></tr>
+          <tr><td>Throughput</td><td>committed ÷ (end − start) in seconds</td><td>the duration includes parsing and the final 200 ms sleep</td></tr>
+          <tr><td>Avg / Max Latency</td><td>first START to commit, committed rows only</td><td>includes lock waits, detection delay and all backoff sleeps</td></tr>
+          <tr><td>Locks Acq / Locks Fail</td><td>return value of <code>acquireLock</code>. Acq is reset on restart, Fail isn't</td><td>Fail includes successful waits (Part 2, section 4)</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · test.txt run 1</span>
+        <p>Success rate \(= 100 \times 1000 / (1000 + 2843 + 0) = 100{,}000 / 3{,}843 = 26.02\%\), printed as 26.0%. Throughput \(= 1000 / 9.31 \approx 107.4\) txn/s, printed as 107.47 (the duration is shown rounded). For <code>test4.txt</code>, 2 commits in 0.38 s gives 5.29 txn/s. Of that 0.38 s, 0.20 s is the fixed final sleep, so throughput on the tiny files says nothing about the engine.</p>
+      </div>
+      <div class="callout impl">
+        <span class="box-label">Be careful · "100% commit rate" and the harness's own success rate measure different things</span>
+        <p>"Every transaction eventually committed" means \(\text{completed} / \text{transactions} = 1000/1000\). The harness's "Transaction Success Rate" on the same run is 26.0% (<code>test.txt</code>) or 13.0% (<code>dead_test.txt</code>). Anyone who opens <code>transaction_metrics.txt</code> sees the second number first.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s6">6. What the restarts looked like</h2>
+      <div class="callout result">
+        <span class="box-label">Result · restarts per transaction (rows of transaction_metrics.txt, reordered build)</span>
+        <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Run</th><th class="num">0</th><th class="num">1</th><th class="num">2</th><th class="num">3</th><th class="num">4</th><th class="num">5</th><th class="num">6</th><th class="num">7</th><th class="num">8</th><th class="num">9</th><th class="num">total</th></tr></thead>
+          <tbody>
+            <tr><td><code>test.txt</code> #1</td><td class="num">428</td><td class="num">43</td><td class="num">0</td><td class="num">12</td><td class="num">47</td><td class="num">244</td><td class="num">226</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">2,843</td></tr>
+            <tr><td><code>test.txt</code> #2</td><td class="num">476</td><td class="num">5</td><td class="num">5</td><td class="num">11</td><td class="num">15</td><td class="num">83</td><td class="num">405</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">2,953</td></tr>
+            <tr><td><code>dead_test.txt</code> #1</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">44</td><td class="num">345</td><td class="num">477</td><td class="num">134</td><td class="num">–</td><td class="num">6,701</td></tr>
+            <tr><td><code>dead_test.txt</code> #2</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">43</td><td class="num">265</td><td class="num">612</td><td class="num">78</td><td class="num">2</td><td class="num">6,731</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <p>Row check, <code>dead_test.txt</code> #1: \(44 \cdot 5 + 345 \cdot 6 + 477 \cdot 7 + 134 \cdot 8 = 220 + 2{,}070 + 3{,}339 + 1{,}072 = 6{,}701\) ✓. Average latency 25,087 ms, max 33,909 ms (#1). <code>test.txt</code> #1: average 3,529 ms, max 8,984 ms.</p>
+      </div>
+      <p><strong>What this supports.</strong> On <code>dead_test.txt</code>, no transaction committed before its fifth abort, and most took 6–8. With the section 4 table, 7 restarts alone mean about 10 s of base backoff (\(2{,}480 + 2{,}560 + 5{,}000 = 10{,}040\) ms), which is consistent with the 25 s average latency. On <code>test.txt</code>, 43–48% of transactions never restarted, while most of the rest restarted 5–6 times. <strong>What it doesn't.</strong> The audit can't split the restarts into necessary aborts, tail aborts (Part 3, section 4) and phantom-edge aborts, and it has only two runs per file.</p>
+    </section>
+
+    <section>
+      <h2 id="s7">7. A latent way to exit without committing</h2>
+      <p>The harness checks for an abort only after a read or write. If the detector aborts a transaction whose wait already ended (a stale edge, Part 3, section 2) and that thread's next operation is <code>COMMIT</code>, then <code>Transaction::commit()</code> refuses because the state is <code>ABORTED</code>. <code>recordTxnEnd</code> is never called, and the thread falls off the end of its operation list uncommitted. None of the 1,000-transaction runs in the audit showed an uncommitted row (0 in 5 runs). The code doesn't prevent it.</p>
+    </section>
+
+    <section>
+      <h2 id="s8">8. The other harnesses</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Status</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>src/2pl_test_runner.cpp</code></td><td>doesn't build</td><td>calls undefined <code>checkForDeadlocks()</code>, and calls non-static <code>initLogFile</code> as static (Part 2, section 8)</td></tr>
+          <tr><td><code>tests/test_lock_manager.cpp</code></td><td>doesn't build</td><td><code>LockManager(logger)</code>, but the constructor needs <code>(Logger&amp;, ResourceAllocationGraph&amp;)</code></td></tr>
+          <tr><td><code>tests/test_tree_protocol.cpp</code></td><td>empty</td><td>tree-locking protocol never written</td></tr>
+          <tr><td><code>makefile</code> <code>run</code></td><td>builds the working harness, runs <code>test4.txt</code></td><td>no target for the other two</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>So the repo contains no unit test that passes and no automated correctness check. The only executable evidence is this harness's metrics and logs.</p>
+    </section>
+
+    <div class="recap"><span class="box-label">Carried forward</span>per-transaction grouping and the racy item map (§1) · workload statistics, and <code>dead_test.txt</code>'s built-in bipartite deadlocks (§2) · 1,000 barrier-released threads (§3) · aging \(p = 1 + k\) and backoff \(b(p)\), with jitter past the cap (§4) · exact metric definitions: the success-rate formula, and what throughput's duration includes (§5) · restart distributions: every <code>dead_test.txt</code> transaction aborted ≥ 5 times (§6) · the latent uncommitted exit (§7) · the other harnesses don't build (§8).</div>
+  </main>
+  <div class="pager">
+    <a href="07-part-deadlock-detector.html"><span class="lbl">Back</span>← Part 3 · DeadlockDetector</a>
+    <a class="next" href="09-results-and-takeaways.html"><span class="lbl">Next</span>Results and takeaways →</a>
+  </div>
+</div>
+</body>
+</html>

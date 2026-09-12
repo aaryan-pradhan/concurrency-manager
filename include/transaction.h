@@ -2,7 +2,10 @@
 
 #include <set>
 #include <vector>
+#include <atomic>
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <iostream>
 #include <unordered_map>
@@ -29,7 +32,7 @@ class Transaction
 {
 private:
     int txnId;                                       // Unique transaction identifier
-    TransactionState state;                          // Current state of the transaction
+    std::atomic<TransactionState> state;             // Current state; written by the owning thread and the deadlock detector
     std::set<int> locksHeld;                         // Set of resource IDs for which this transaction holds locks
     std::chrono::system_clock::time_point startTime; // Transaction start timestamp
     std::string metadata;                            // Optional transaction metadata
@@ -43,10 +46,8 @@ public:
      */
     Transaction(int id, const std::string &meta = "", int priority = 1);
 
-    /**
-     * @brief Destructor - unregisters the transaction from the static map
-     */
-    ~Transaction();
+    Transaction(const Transaction &) = delete;
+    Transaction &operator=(const Transaction &) = delete;
 
     /**
      * @brief Records acquisition of a lock on a resource
@@ -63,15 +64,16 @@ public:
     bool releaseLock(int resourceId);
 
     /**
-     * @brief Marks the transaction as committed
-     * @return true if the transition to COMMITTED was successful
+     * @brief Atomically marks the transaction as committed
+     * @return true if the transition to COMMITTED was successful (false if already committed or aborted)
      */
     bool commit();
 
     /**
-     * @brief Marks the transaction as aborted
+     * @brief Atomically marks the transaction as aborted
+     * @return true if the transaction is now ABORTED (false if it had already committed)
      */
-    void abort();
+    bool abort();
 
     /**
      * @brief Transitions the transaction from GROWING to SHRINKING phase
@@ -128,17 +130,20 @@ public:
      */
     long getAgeMillis() const;
 
-    // Static map to store all active transactions by ID
-    static std::unordered_map<txn_id_t, Transaction *> active_transactions_;
+    // Registry of active transactions, shared by LockManager and DeadlockDetector.
+    // Guarded by registry_mutex_; entries are shared_ptr so a looked-up transaction
+    // stays alive even if its owner erases it concurrently.
+    static std::unordered_map<txn_id_t, std::shared_ptr<Transaction>> active_transactions_;
+    static std::mutex registry_mutex_;
 
-    // Register a transaction in the static map (call in constructor)
-    static void RegisterTransaction(Transaction *txn);
+    // Register a transaction (replaces any previous entry with the same ID)
+    static void RegisterTransaction(const std::shared_ptr<Transaction> &txn);
 
-    // Remove a transaction from the static map (call in destructor)
-    static void UnregisterTransaction(txn_id_t txn_id);
+    // Remove a transaction; if expected is non-null, only removes the entry if it is that object
+    static void UnregisterTransaction(txn_id_t txn_id, const Transaction *expected = nullptr);
 
-    // Get a transaction by ID
-    static Transaction *GetTransaction(txn_id_t txn_id);
+    // Get a transaction by ID (nullptr if not registered)
+    static std::shared_ptr<Transaction> GetTransaction(txn_id_t txn_id);
 
     /**
      * @brief Gets the transaction priority

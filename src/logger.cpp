@@ -189,14 +189,18 @@ void Logger::fatal(const std::string& message) {
     log(LogLevel::FATAL, message);
 }
 
+// These log after updating, without holding mtx: log() takes mtx itself, and
+// std::mutex is not recursive, so locking here first would deadlock the caller.
 void Logger::setLogLevel(LogLevel level) {
-    std::lock_guard<std::mutex> lock(mtx);
     minLevel = level;
     info("Log level set to " + logLevelToString(level));
 }
 
 void Logger::setConsoleOutput(bool enable) {
-    std::lock_guard<std::mutex> lock(mtx);
     consoleOutput = enable;
     info(std::string("Console output ") + (enable ? "enabled" : "disabled"));
+}
+
+bool Logger::isEnabled(LogLevel level) const {
+    return level >= minLevel.load();
 }

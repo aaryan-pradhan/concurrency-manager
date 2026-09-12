@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Prerequisite 3: Locks and two-phase locking · Concurrency Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Prerequisite 3 · Locks and 2PL</span></div>
+    <span class="stage-tag">Prerequisite 3</span>
+    <h1 class="title">Locks and two-phase locking</h1>
+    <p class="dek">Shared and exclusive locks, how a lock table decides who waits, why an upgrade must keep its old lock, and a proof that the two-phase rule makes every schedule serializable, along with exactly which rule-break would void that guarantee.</p>
+  </header>
+  <main>
+
+    <div class="recap"><span class="box-label">Uses</span>the conflict rule and precedence-graph test from <a href="01-transactions-and-serializability.html#s5">page 1, sections 5</a>–<a href="01-transactions-and-serializability.html#s7">7</a> · strict schedules and cascading aborts from <a href="01-transactions-and-serializability.html#s8">page 1, section 8</a> · latch vs lock from <a href="02-threads-mutexes-condvars.html#s3">page 2, section 3</a>.</div>
+
+    <section>
+      <div class="spec-quote">
+        <span class="box-label">docs/05-two-phase-locking-protocol.md</span>
+        <blockquote>"Every transaction's lifetime is split into exactly two phases: Growing phase — the transaction may acquire new locks. It may not release any lock during this phase. Shrinking phase — the transaction may release locks. It may not acquire any new lock during this phase. The moment a transaction releases its very first lock, it has permanently moved from growing to shrinking — there is no going back."</blockquote>
+      </div>
+      <p>Sections 1–4 build the locks the rule talks about. Sections 5–6 state the rule precisely and prove what it buys. Section 7 separates the variants (basic, strict, rigorous) the docs and the CV refer to.</p>
+    </section>
+
+    <section>
+      <h2 id="s1">1. Shared and exclusive locks</h2>
+      <p>Before reading item \(x\), a transaction takes a <em class="term">shared lock</em> \(S(x)\). Before writing, it takes an <em class="term">exclusive lock</em> \(X(x)\). Two locks from different transactions on the same item can be held together only if they are <em class="term">compatible</em>:</p>
+      <div class="tbl-wrap">
+      <table>
+        <caption>Compatibility matrix (another transaction already holds ↓, request →)</caption>
+        <thead><tr><th>held \ requested</th><th>S</th><th>X</th></tr></thead>
+        <tbody>
+          <tr><td>none</td><td>grant</td><td>grant</td></tr>
+          <tr><td>S</td><td>grant</td><td>wait</td></tr>
+          <tr><td>X</td><td>wait</td><td>wait</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>This is the conflict table from page 1, section 5 turned into a rule. "Grant" is exactly the non-conflicting case (read with read). A transaction's own locks never block itself.</p>
+    </section>
+
+    <section>
+      <h2 id="s2">2. The lock table and the grant policy</h2>
+      <p>A <em class="term">lock table</em> maps each item to a list of requests, each marked granted or waiting. The table is itself shared memory, so it's protected by a latch (page 2, section 3). When a new request arrives, the system needs a <em class="term">grant policy</em>:</p>
+      <ul>
+        <li><strong>FIFO / fair:</strong> grant only if the request is compatible with the granted locks <em>and</em> no incompatible request is queued ahead of it.</li>
+        <li><strong>Compatible-with-granted only:</strong> grant whenever the request fits the granted locks, ignoring the queue. Newcomers can overtake waiters. This is called <em class="term">barging</em>.</li>
+      </ul>
+      <div class="worked">
+        <span class="box-label">Worked example · barging starves a writer</span>
+        <p>\(T_1\) holds \(S(x)\). \(T_2\) requests \(X(x)\) and waits. \(T_3\) requests \(S(x)\): it's compatible with \(T_1\)'s S, so under barging it's granted. \(T_1\) releases, but \(T_3\) still holds S, so \(T_2\) keeps waiting. \(T_4\) arrives with \(S(x)\) and is granted before \(T_3\) releases, and so on. As long as readers overlap, \(T_2\) never runs. That's <em class="term">starvation</em>: no deadlock, yet one transaction makes no progress. FIFO would have queued \(T_3\) behind \(T_2\).</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s3">3. Lock upgrades</h2>
+      <p>A transaction that read \(x\) under \(S(x)\) and now wants to write it requests an <em class="term">upgrade</em> to \(X(x)\). The textbook implementation keeps the S lock granted while the upgrade waits, and converts it once the transaction is the only holder.</p>
+      <div class="callout impl">
+        <span class="box-label">Be careful · the S lock must stay held during the wait</span>
+        <p>If an implementation drops \(S(x)\) and joins the queue for \(X(x)\) as if it were a fresh request, another transaction can take \(X(x)\), write, and commit in the gap. The upgrader's earlier read is then stale, which is precisely schedule S₂ from page 1, section 7. Section 6 shows this also breaks the two-phase rule. <a href="06-part-lock-manager.html#s6">Part 2, section 6</a> finds this in the project.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · the upgrade deadlock</span>
+        <p>\(T_1\) and \(T_2\) both hold \(S(F)\). \(T_1\) requests \(X(F)\) and must wait for \(T_2\)'s S. \(T_2\) requests \(X(F)\) and must wait for \(T_1\)'s S. Each waits for the other, forever. The project's <code>tests/test1.txt</code> is built around this pattern. Real systems reduce it with an intermediate <em class="term">update lock</em> (U) that only one transaction may hold, but the project doesn't have one.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s4">4. Why locking each operation isn't enough</h2>
+      <p>Taking the right lock around every single read and write still allows non-serializable schedules if a transaction releases a lock and later takes another one.</p>
+      <div class="worked">
+        <span class="box-label">Worked example</span>
+        <p class="sched">X₁(A) w₁(A) U₁(A) &nbsp; X₂(A) w₂(A) X₂(B) w₂(B) U₂(A) U₂(B) c₂ &nbsp; X₁(B) w₁(B) U₁(B) c₁</p>
+        <p>(\(U\) means unlock.) Every write happens under an exclusive lock. But on A, \(w_1\) comes before \(w_2\), giving \(T_1 \to T_2\). On B, \(w_2\) comes before \(w_1\), giving \(T_2 \to T_1\). That's a cycle, so the schedule isn't serializable. The fault is that \(T_1\) released A and then acquired B.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s5">5. The two-phase locking rule</h2>
+      <p>Under <em class="term">two-phase locking</em> (2PL), a transaction never acquires a lock after it has released any lock. Its lifetime splits into a <em class="term">growing phase</em> (acquire only) and a <em class="term">shrinking phase</em> (release only). The instant it acquires its last lock is its <em class="term">lock point</em>, written \(\mathrm{LP}(T)\).</p>
+      <div class="eq">
+        \[ \forall\, T:\quad \max_{\text{acquisitions } a \text{ of } T} t(a) \;\lt\; \min_{\text{releases } u \text{ of } T} t(u) \]
+        <p class="note">\(t(\cdot)\) is the time an event happens. Every acquisition of \(T\) comes before every release of \(T\). \(\mathrm{LP}(T)\) is the left-hand side.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s6">6. Proof: 2PL schedules are conflict-serializable</h2>
+      <p>Take any schedule \(S\) produced under 2PL, and any edge \(T_i \to T_j\) of its precedence graph. By definition, some operation \(o_i(x)\) conflicts with a later \(o_j(x)\). Conflicting operations need incompatible locks (section 1), so \(T_i\) must release its lock on \(x\) before \(T_j\) can acquire its own:</p>
+      <div class="eq">
+        \[ \begin{aligned}
+          \mathrm{LP}(T_i) &amp;\lt t\big(\text{release}_i(x)\big) &amp;&amp; \text{2PL for } T_i \\
+          t\big(\text{release}_i(x)\big) &amp;\lt t\big(\text{acquire}_j(x)\big) &amp;&amp; \text{incompatible locks} \\
+          t\big(\text{acquire}_j(x)\big) &amp;\le \mathrm{LP}(T_j) &amp;&amp; \text{definition of lock point}
+        \end{aligned}
+        \quad\Longrightarrow\quad \mathrm{LP}(T_i) \lt \mathrm{LP}(T_j) \]
+      </div>
+      <p>So every edge points from an earlier lock point to a later one. A cycle \(T_1 \to T_2 \to \cdots \to T_k \to T_1\) would give \(\mathrm{LP}(T_1) \lt \mathrm{LP}(T_1)\), which is impossible. The graph is acyclic, and ordering the transactions by lock point gives an equivalent serial schedule. ∎</p>
+      <div class="worked">
+        <span class="box-label">Worked example · where the proof breaks if one rule is broken</span>
+        <p>The first step, \(\mathrm{LP}(T_i) \lt t(\text{release}_i(x))\), is the only place 2PL is used. In section 4, \(T_1\) released A at step 3 (\(U_1(A)\)) and acquired B at step 11 (\(X_1(B)\)), so its "lock point" came <em>after</em> a release and the chain fails. An upgrade that drops \(S(N)\) and later acquires \(X(N)\) (section 3) is the same violation, just on a single item. Once any transaction does that, the theorem no longer covers the schedule.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s7">7. Basic, strict and rigorous 2PL</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Variant</th><th>Rule on top of 2PL</th><th>What it adds</th></tr></thead>
+        <tbody>
+          <tr><td><em class="term">Basic 2PL</em></td><td>none: locks may be released any time after the lock point, even before commit</td><td>conflict-serializable, but cascading aborts are possible</td></tr>
+          <tr><td><em class="term">Strict 2PL</em></td><td>exclusive locks are held until commit or abort</td><td>strict schedules, hence cascadeless (page 1, section 8)</td></tr>
+          <tr><td><em class="term">Rigorous 2PL</em></td><td><em>all</em> locks are held until commit or abort</td><td>also orders transactions by commit time</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="callout impl">
+        <span class="box-label">Be careful · naming varies between textbooks</span>
+        <p>Silberschatz et al. use the three names above. Several other texts, and this project's own docs, use "strict 2PL" for "all locks held until the end", which the table calls rigorous. In an interview, say which definition you mean: "every lock is held until commit or abort."</p>
+      </div>
+      <p>Basic 2PL can also produce a schedule where \(T_2\) reads a value that \(T_1\) wrote and released but hasn't yet committed. If \(T_1\) then aborts, \(T_2\) must abort too. Holding exclusive locks until the end removes that possibility.</p>
+    </section>
+
+    <section>
+      <h2 id="s8">8. What 2PL does not solve: deadlock</h2>
+      <p>2PL deliberately lets a transaction hold some locks while waiting for others. That's exactly the setup for a cycle of waits:</p>
+      <div class="worked">
+        <span class="box-label">Worked example · tests/test4.txt</span>
+        <p class="sched">X₁(A) &nbsp; X₂(B) &nbsp; X₁(B) waits for T₂ &nbsp; X₂(A) waits for T₁</p>
+        <p>Both transactions follow 2PL perfectly, and neither can ever proceed. <a href="04-deadlocks-and-wait-for-graphs.html">Page 4</a> covers how systems detect and break this.</p>
+      </div>
+    </section>
+
+    <div class="recap"><span class="box-label">Carried forward</span>S/X locks and the compatibility matrix (§1) · lock table, FIFO vs barging, starvation (§2) · upgrades must keep S while waiting, and the upgrade deadlock (§3) · per-operation locking isn't enough (§4) · the 2PL rule and lock points (§5) · the lock-point proof and exactly where a release-then-acquire breaks it (§6) · basic, strict and rigorous 2PL, and the naming caveat (§7) · 2PL allows deadlock (§8).</div>
+  </main>
+  <div class="pager">
+    <a href="02-threads-mutexes-condvars.html"><span class="lbl">Back</span>← Threads, mutexes and condition variables</a>
+    <a class="next" href="04-deadlocks-and-wait-for-graphs.html"><span class="lbl">Next</span>Deadlocks and wait-for graphs →</a>
+  </div>
+</div>
+</body>
+</html>

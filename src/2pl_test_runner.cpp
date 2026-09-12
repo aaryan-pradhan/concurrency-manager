@@ -232,9 +232,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Initialize the RAG log file
-    ResourceAllocationGraph::initLogFile("RAGoutput.log");
-    
+    // The RAG log file (rag_log.txt) is initialized by the ResourceAllocationGraph
+    // that ConcurrencyManager constructs below.
+
     // Initialize concurrency manager
     ConcurrencyManager cm("2pl_test_results.log");
     

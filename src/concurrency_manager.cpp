@@ -3,8 +3,8 @@
 #include <iostream>
 #include <limits>
 
-ConcurrencyManager::ConcurrencyManager(const std::string &logFilePath, uint64_t detectionIntervalMs)
-    : logger(logFilePath, false),
+ConcurrencyManager::ConcurrencyManager(const std::string &logFilePath, uint64_t detectionIntervalMs, LogLevel logLevel)
+    : logger(logFilePath, false, logLevel),
       rag(logger),
       lockManager(logger, rag),
       nextTxnId(1)
@@ -42,14 +42,14 @@ ConcurrencyManager::~ConcurrencyManager()
     logger.info("Concurrency Manager shut down");
 }
 
-Transaction *ConcurrencyManager::getTransaction(int txnId)
+std::shared_ptr<Transaction> ConcurrencyManager::getTransaction(int txnId)
 {
     auto it = transactions.find(txnId);
     if (it == transactions.end())
     {
         return nullptr;
     }
-    return it->second.get();
+    return it->second;
 }
 
 int ConcurrencyManager::beginTransaction(const std::string &metadata, int requestedTxnId, int priority)
@@ -74,12 +74,15 @@ int ConcurrencyManager::beginTransaction(const std::string &metadata, int reques
         if (transactions.find(txnId) != transactions.end())
         {
             // Transaction already exists
-            auto *txn = getTransaction(txnId);
+            auto txn = getTransaction(txnId);
 
             // Check if it's in a state we can work with
             if (txn && txn->getState() == TransactionState::ABORTED)
             {
-                // Remove the existing aborted transaction
+                // Remove the existing aborted transaction. Release anything still recorded
+                // under this ID first: an aborted incarnation must not hand locks to the new one.
+                lockManager.releaseAllLocks(txnId);
+                Transaction::UnregisterTransaction(txnId, txn.get());
                 transactions.erase(txnId);
                 logger.info("Replacing aborted transaction T" + std::to_string(txnId));
             }
@@ -94,7 +97,9 @@ int ConcurrencyManager::beginTransaction(const std::string &metadata, int reques
     }
 
     // Create the transaction object with specified priority
-    transactions[txnId] = std::make_unique<Transaction>(txnId, metadata, priority);
+    auto txn = std::make_shared<Transaction>(txnId, metadata, priority);
+    transactions[txnId] = txn;
+    Transaction::RegisterTransaction(txn);
 
     // Log appropriate message based on whether this is a new or restarted transaction
     if (isRestart)
@@ -116,7 +121,7 @@ int ConcurrencyManager::beginTransaction(const std::string &metadata, int reques
 bool ConcurrencyManager::acquireLock(int txnId, int resourceId, LockType lockType, bool wait)
 {
     // Check if transaction exists
-    Transaction *txn;
+    std::shared_ptr<Transaction> txn;
     {
         std::lock_guard<std::mutex> lock(mtx);
         txn = getTransaction(txnId);
@@ -149,7 +154,7 @@ bool ConcurrencyManager::acquireLock(int txnId, int resourceId, LockType lockTyp
 bool ConcurrencyManager::releaseLock(int txnId, int resourceId)
 {
     // Check if transaction exists
-    Transaction *txn;
+    std::shared_ptr<Transaction> txn;
     {
         std::lock_guard<std::mutex> lock(mtx);
         txn = getTransaction(txnId);
@@ -172,9 +177,9 @@ bool ConcurrencyManager::releaseLock(int txnId, int resourceId)
     return released;
 }
 
-bool ConcurrencyManager::commitTransaction(int txnId)
+bool ConcurrencyManager::commitTransaction(int txnId, const std::function<void()> &beforeRelease)
 {
-    Transaction *txn;
+    std::shared_ptr<Transaction> txn;
     {
         std::lock_guard<std::mutex> lock(mtx);
         txn = getTransaction(txnId);
@@ -185,18 +190,25 @@ bool ConcurrencyManager::commitTransaction(int txnId)
         }
     }
 
-    // Try to commit the transaction
+    // Commit point: atomic GROWING/SHRINKING -> COMMITTED (fails if the detector aborted it)
     bool committed = txn->commit();
 
     if (committed)
     {
         logger.info("Transaction T" + std::to_string(txnId) + " committed successfully");
 
+        // Install effects while every lock is still held (strict 2PL)
+        if (beforeRelease)
+        {
+            beforeRelease();
+        }
+
         // Release all locks
         lockManager.releaseAllLocks(txnId);
 
         // Remove transaction from active map
         std::lock_guard<std::mutex> lock(mtx);
+        Transaction::UnregisterTransaction(txnId, txn.get());
         transactions.erase(txnId);
     }
 
@@ -205,7 +217,7 @@ bool ConcurrencyManager::commitTransaction(int txnId)
 
 bool ConcurrencyManager::abortTransaction(int txnId, const std::string &reason)
 {
-    Transaction *txn;
+    std::shared_ptr<Transaction> txn;
     {
         std::lock_guard<std::mutex> lock(mtx);
         txn = getTransaction(txnId);
@@ -216,8 +228,12 @@ bool ConcurrencyManager::abortTransaction(int txnId, const std::string &reason)
         }
     }
 
-    // Abort the transaction
-    txn->abort();
+    // Abort the transaction (fails only if it already committed)
+    if (!txn->abort())
+    {
+        logger.warning("Transaction T" + std::to_string(txnId) + " already committed, cannot abort");
+        return false;
+    }
 
     logger.info("Transaction T" + std::to_string(txnId) + " aborted: " +
                 (reason.empty() ? "User initiated" : reason));
@@ -227,6 +243,7 @@ bool ConcurrencyManager::abortTransaction(int txnId, const std::string &reason)
 
     // Remove transaction from active map
     std::lock_guard<std::mutex> lock(mtx);
+    Transaction::UnregisterTransaction(txnId, txn.get());
     transactions.erase(txnId);
 
     return true;
@@ -236,7 +253,7 @@ TransactionState ConcurrencyManager::getTransactionState(int txnId)
 {
     std::lock_guard<std::mutex> lock(mtx);
 
-    Transaction *txn = getTransaction(txnId);
+    auto txn = getTransaction(txnId);
     if (!txn)
     {
         return TransactionState::ABORTED; // Default to aborted if not found
@@ -302,6 +319,11 @@ std::string ConcurrencyManager::getSystemState() const
     }
 
     return ss.str();
+}
+
+bool ConcurrencyManager::checkForDeadlocks()
+{
+    return deadlockDetector->RunCycleDetection() > 0;
 }
 
 std::string ConcurrencyManager::getResourceAllocationGraph() const
