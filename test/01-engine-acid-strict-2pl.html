@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>1 · The engine: ACID, strict 2PL, detection · Interview Prep</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="qa.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Interview prep</a><span class="sep">/</span><span class="here">1 · The engine</span></div>
+    <span class="stage-tag">18 questions · E1–E18</span>
+    <h1 class="title">"A multi-threaded ACID-compliant transaction engine in C++ implementing Strict 2PL and graph-based deadlock detection"</h1>
+    <p class="dek">What an interviewer asks after reading your project's one-line summary: the walkthrough, the architecture, each letter of ACID, what "strict" 2PL means and where the code enforces it, why detection was chosen over the alternatives, and the C++ concurrency tools behind it. Each question opens with the prerequisites you need to answer it. Answers are hidden until you click.</p>
+  </header>
+  <main>
+
+    <nav class="qindex" aria-label="Questions on this page">
+      <h2>Questions</h2>
+      <div class="group">The story</div>
+      <ul>
+        <li><a href="#e1"><span class="qn">E1</span>Walk me through the project</a></li>
+        <li><a href="#e2"><span class="qn">E2</span>Why not run transactions one at a time?</a></li>
+        <li><a href="#e3"><span class="qn">E3</span>The architecture and a lock request's path</a></li>
+      </ul>
+      <div class="group">ACID</div>
+      <ul>
+        <li><a href="#e4"><span class="qn">E4</span>Define A, C, I and D</a></li>
+        <li><a href="#e5"><span class="qn">E5</span>Which ACID properties do you provide?</a></li>
+        <li><a href="#e6"><span class="qn">E6</span>How would you add durability?</a></li>
+        <li><a href="#e7"><span class="qn">E7</span>Atomicity on abort in your benchmark</a></li>
+      </ul>
+      <div class="group">Strict 2PL</div>
+      <ul>
+        <li><a href="#e8"><span class="qn">E8</span>What is two-phase locking?</a></li>
+        <li><a href="#e9"><span class="qn">E9</span>Basic vs strict vs rigorous</a></li>
+        <li><a href="#e10"><span class="qn">E10</span>Where the code holds locks to commit</a></li>
+        <li><a href="#e11"><span class="qn">E11</span>Downsides of strict 2PL, and alternatives</a></li>
+      </ul>
+      <div class="group">Graph-based deadlock detection</div>
+      <ul>
+        <li><a href="#e12"><span class="qn">E12</span>Why detection over prevention or timeouts?</a></li>
+        <li><a href="#e13"><span class="qn">E13</span>The detector in one minute</a></li>
+      </ul>
+      <div class="group">Multi-threaded C++</div>
+      <ul>
+        <li><a href="#e14"><span class="qn">E14</span>Which concurrency primitives, and why</a></li>
+        <li><a href="#e15"><span class="qn">E15</span>Latches vs locks</a></li>
+        <li><a href="#e16"><span class="qn">E16</span>The hardest bug you found</a></li>
+        <li><a href="#e17"><span class="qn">E17</span>The crash that only happened on macOS</a></li>
+        <li><a href="#e18"><span class="qn">E18</span>What a real DBMS has that yours doesn't</a></li>
+      </ul>
+    </nav>
+
+    <button class="reveal-all" type="button">Show all answers</button>
+
+    <!-- ============ THE STORY ============ -->
+    <section class="qa-section">
+      <h2>The story</h2>
+
+      <article class="qa" id="e1">
+        <div class="qa-id">E1</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Transaction:</strong> a group of reads and writes that must behave as one unit. Either all of it takes effect (commit) or none of it does (abort).</li>
+            <li><strong>Concurrency control:</strong> the part of a database that decides how transactions running at the same time may interleave their operations without corrupting each other's data.</li>
+            <li><strong>Lock:</strong> permission a transaction must hold before touching an item. A shared (S) lock is for reading, and many transactions can hold one on the same item. An exclusive (X) lock is for writing, and only one transaction can hold it.</li>
+            <li><strong>Deadlock:</strong> two or more transactions each waiting for a lock another one holds, in a circle, so none can ever proceed.</li>
+          </ul>
+        </div>
+        <h3 class="q">Walk me through this project.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Can you tell a structured two-minute story: problem, design, how you tested it, results, lessons?</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>In one line:</strong> I built the concurrency-control layer of a database in C++: a lock manager that implements two-phase locking, a background thread that detects and breaks deadlocks, and harnesses that run transactions on many threads. Later I audited it, found real correctness bugs, fixed them, and added a benchmark that checks every run for serializability.</p>
+          <p><strong>The problem.</strong> When many transactions run at once, their reads and writes interleave, and some interleavings corrupt data. The classic case is a lost update, where two transactions read the same value and both write back a result based on it. The job is to allow only interleavings that are equivalent to running the transactions one at a time, while still getting the throughput benefit of running them together.</p>
+          <p><strong>The design has four parts.</strong></p>
+          <ul>
+            <li>A <code>ConcurrencyManager</code> facade that begins, commits and aborts transactions and enforces the two-phase rule: no new locks after the first release.</li>
+            <li>A <code>LockManager</code> with shared and exclusive locks, S→X upgrades, a lock table guarded by a mutex, and condition variables for waiting.</li>
+            <li>A <code>DeadlockDetector</code> thread that periodically snapshots who is waiting for whom, runs a depth-first search for cycles, and aborts the lowest-priority transaction in each cycle.</li>
+            <li>Harnesses that run transactions on threads and restart aborted ones with exponential backoff.</li>
+          </ul>
+          <p><strong>Testing, in two stages.</strong> The original version ran text schedule files: one with 1,000 random transactions, and one with 1,000 transactions deliberately built to deadlock. Each transaction ran on its own thread, so 1,000 threads started at once. Every run finished, but "it finished" isn't evidence of correctness. So I later audited it by replaying the lock logs, and found four real problems:</p>
+          <ul>
+            <li>A waiting S→X upgrade gave up its shared lock, which let about 4 of 1,000 committed transactions per run form non-serializable schedules.</li>
+            <li>The deadlock detector could abort a transaction that wasn't part of the cycle.</li>
+            <li>There were data races in shared structures.</li>
+            <li>The program crashed at startup on macOS because of C++ member construction order.</li>
+          </ul>
+          <p>I fixed all four, added 16 regression checks, and wrote a benchmark that runs a fixed workload at 1, 2, 4, … threads with the 1-thread run as the baseline. It checks every run with a precedence-graph test and a lost-update test.</p>
+          <p><strong>Results.</strong> With 1 ms of simulated I/O per operation and rare conflicts, throughput scaled 7.97× at 8 threads and 53.74× at 64 threads, and every run was serializable. With no I/O, adding threads made it slower: 0.24× at 32 threads, because one global mutex serializes everything. Under heavy contention it peaked at 2.83× with 4 threads and collapsed to 0.25× at 64. At 1,000 threads I found one remaining race that broke serializability in 2 of 5 runs, traced it to a lock release landing on a restarted transaction, and showed that a small fix removed it in a 20-run reproduction.</p>
+          <p><strong>Two lessons.</strong> First, concurrency correctness needs an explicit check, like a precedence graph over the real history. Runs that finish can still be wrong. Second, extra threads only help when transactions spend their time waiting on something other than each other. The same engine went from 54× faster to 4× slower depending only on the workload.</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p><strong>Timeline.</strong> The course project ran Mar–Jun 2025. The audit, the fixes, the benchmark and every speedup number above come from later work, committed in September 2026. If you quote those numbers, say they came from a later rework, not the original submission. Also, don't open with "ACID-compliant" or a single speedup figure. Both get picked apart (E5, T3).</p>
+        </div>
+        <div class="followup">
+          <span class="box-label">Likely follow-up</span>
+          <p><strong>"What would you do next?"</strong> Merge the fix for the 1,000-thread race, replace the single global lock-table mutex with striped per-resource latches and wait queues, and preserve each transaction's original timestamp across restarts so victim selection can guarantee progress.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/index.html">Contents</a> · <a href="../explanations/09-results-and-takeaways.html#s2">Results, section 2</a></p>
+      </article>
+
+      <article class="qa" id="e2">
+        <div class="qa-id">E2</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>A <strong>schedule</strong> is the order in which the operations of several transactions actually execute. A <strong>serial schedule</strong> runs one whole transaction, then the next. <strong>Throughput</strong> is committed transactions per second. Three classic <strong>anomalies</strong> appear when interleaving is uncontrolled:</p>
+          <ul>
+            <li><strong>Lost update:</strong> T1 and T2 both read x = 10. T1 writes 11, then T2 writes 11, so one increment disappears.</li>
+            <li><strong>Dirty read:</strong> T2 reads a value T1 wrote but hasn't committed. If T1 then aborts, T2 used data that never existed.</li>
+            <li><strong>Unrepeatable read:</strong> T1 reads x twice and gets different values, because T2 wrote x in between.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why do you need a concurrency manager at all? Why not just run transactions one at a time?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Do you understand the correctness-versus-throughput trade-off that concurrency control exists to resolve?</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Serial execution is always correct, but it wastes time whenever a transaction waits on something slow, like disk, network or a user.</strong> During that wait the CPU is idle, but no other transaction may start. Running transactions concurrently fills those gaps, but uncontrolled interleaving produces lost updates, dirty reads and unrepeatable reads.</p>
+          <p>A concurrency manager gets both properties. It lets transactions overlap, but only in ways equivalent to <em>some</em> serial order. That property is called serializability, and two-phase locking is one way to enforce it.</p>
+          <p>My numbers show both sides of the trade-off. In the benchmark with 1 ms of simulated I/O per operation, the serial baseline did 191 transactions per second, and 64 concurrent threads did 10,273 per second, 53.74× more, with every run still serializable. But when transactions had no I/O at all, the serial run was fastest: 32 threads ran at 0.24× of one thread. With nothing to wait on, concurrency only adds coordination cost. So "why not serial?" has a real answer only when transactions spend time waiting.</p>
+        </div>
+        <div class="followup">
+          <span class="box-label">Likely follow-up</span>
+          <p><strong>"So when would you actually run serially?"</strong> When transactions are short and CPU-bound, with all data in memory. Some in-memory databases do exactly this: they partition data and run each partition's transactions serially on one core. That avoids locking overhead entirely, at the cost of making cross-partition transactions expensive.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/01-transactions-and-serializability.html#s4">Page 1, section 4</a> · <a href="../explanations/09-results-and-takeaways.html#s4">Results, section 4</a></p>
+      </article>
+
+      <article class="qa" id="e3">
+        <div class="qa-id">E3</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Facade:</strong> one class that gives callers a simple interface and delegates to the components that do the work.</li>
+            <li><strong>Mutex:</strong> a lock between threads (not transactions) that lets only one thread at a time run a critical section of code.</li>
+            <li><strong>Condition variable:</strong> lets a thread sleep until another thread signals that shared state changed. <code>wait</code> releases the mutex while sleeping and re-acquires it on waking.</li>
+            <li><strong>Background thread:</strong> a thread that runs a loop independently of the request path, here waking every few milliseconds.</li>
+          </ul>
+        </div>
+        <h3 class="q">Draw the architecture. What happens, step by step, when a transaction asks for a lock?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Do you know your own system's components and the exact request path, including where it blocks?</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+<pre class="code"><code>worker thread
+  └─ ConcurrencyManager::acquireLock(txn, item, S|X)
+       ├─ under CM mutex: find txn, require state == GROWING   (2PL: no locks after a release)
+       └─ LockManager::acquireLock   (under the lock-table mutex)
+            ├─ txn ABORTED?              → false
+            ├─ already holds S/X enough? → true
+            ├─ holds S, wants X          → upgrade: convert in place, or queue X keeping S
+            ├─ compatible with granted?  → grant, true
+            └─ otherwise                 → queue request, UNLOCK, sleep on condition variable
+
+release / commit / abort
+  └─ LockManager::releaseAllLocks → remove entries → grant compatible waiters → notify_all
+
+DeadlockDetector thread (every 10–100 ms)
+  └─ snapshot waiter→holder edges under the lock-table mutex → DFS for cycles
+       → victim = lowest priority in the cycle → CAS state to ABORTED → releaseAllLocks(victim)
+
+Transaction registry (static map + its own mutex, shared_ptr entries): state and priority by ID</code></pre>
+          <p>The facade checks the 2PL phase under its own mutex, then calls the lock manager <em>without</em> holding that mutex. Otherwise one blocked transaction would stop every other transaction from beginning or committing.</p>
+          <p>The lock manager does everything under one mutex. If the request can't be granted, it appends a pending entry to that item's queue, unlocks, and sleeps on a condition variable. Sleeping while holding the mutex would freeze the whole engine.</p>
+          <p>A waiter wakes for one of three reasons: it was aborted as a deadlock victim, a releasing thread already granted its request, or the request became compatible. Releases hand locks to compatible waiters directly, pending upgrades first, then wake everyone.</p>
+          <p>The detector runs on its own thread. It takes one consistent snapshot of the wait edges, finds cycles, and aborts one victim per cycle. The victim's thread notices through its wake predicate and restarts with a higher priority.</p>
+        </div>
+        <div class="followup">
+          <span class="box-label">Likely follow-up</span>
+          <p><strong>"What's the bottleneck in that picture?"</strong> The single lock-table mutex plus one condition variable shared by all waiters. Every acquire, release and detector snapshot serializes on that mutex, and every release wakes every waiter. That's why the CPU-only benchmark got slower with more threads (see S21 and T5).</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s1">Part 1, section 1</a> · <a href="../explanations/06-part-lock-manager.html#s3">Part 2, sections 3–5</a></p>
+      </article>
+    </section>
+
+    <!-- ============ ACID ============ -->
+    <section class="qa-section">
+      <h2>ACID</h2>
+
+      <article class="qa" id="e4">
+        <div class="qa-id">E4</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Commit:</strong> the point after which a transaction's effects are official. <strong>Abort (rollback):</strong> undoing everything the transaction did.</li>
+            <li><strong>Crash:</strong> the process or machine stops without warning, and everything in memory is lost.</li>
+            <li><strong>Invariant (integrity constraint):</strong> a rule the data must always satisfy, e.g. "account balances are never negative", or "debits equal credits".</li>
+            <li><strong>Log:</strong> an append-only file of change records that recovery can replay after a crash.</li>
+          </ul>
+        </div>
+        <h3 class="q">What does ACID stand for? Define each property precisely, and say how a real database implements it.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Textbook precision, and whether you know the mechanism behind each letter rather than the slogan.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Letter</th><th>Precise meaning</th><th>Usual mechanism</th></tr></thead>
+            <tbody>
+              <tr><td><strong>A</strong>tomicity</td><td>All of a transaction's changes take effect, or none do, including when it aborts or the system crashes mid-way.</td><td>Undo log (before-images) to roll back, or deferred updates applied only at commit.</td></tr>
+              <tr><td><strong>C</strong>onsistency</td><td>A transaction that starts from a state satisfying every integrity constraint ends in a state that satisfies them too.</td><td>Declared constraints (keys, foreign keys, checks) plus correct application logic. The database only guarantees the other three letters don't break it.</td></tr>
+              <tr><td><strong>I</strong>solation</td><td>Concurrent transactions produce a result equivalent to some serial execution (full serializability), or to a weaker, named isolation level.</td><td>Concurrency control: two-phase locking, multi-version concurrency control (MVCC), optimistic validation.</td></tr>
+              <tr><td><strong>D</strong>urability</td><td>Once commit is acknowledged, its effects survive any later crash.</td><td>Write-ahead log flushed to stable storage (<code>fsync</code>) before acknowledging, plus recovery that replays it.</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>Two points interviewers like. Consistency is partly the application's responsibility: the database can't know that your transfer should debit one account by the amount it credits another. And isolation comes in levels. Read committed, repeatable read, snapshot isolation and serializable each allow different anomalies, so "isolated" without a level is vague.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/01-transactions-and-serializability.html#s2">Page 1, section 2</a></p>
+      </article>
+
+      <article class="qa" id="e5">
+        <div class="qa-id">E5</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>In-memory vs persistent:</strong> data only in RAM disappears on a crash. Durability needs a record on disk.</li>
+            <li><strong>Deferred update:</strong> a transaction's writes go into a private buffer and are applied to shared data only at commit. Aborting just discards the buffer, so no undo is needed.</li>
+            <li><strong>Where this project keeps data:</strong> the engine itself stores no values. A "read" is just an S lock and a "write" an X lock. The benchmark harness keeps one integer per item.</li>
+          </ul>
+        </div>
+        <h3 class="q">Your CV says "ACID-compliant". Which of the four properties does your engine actually provide, and how?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether you overclaim. This is one of the first things a database interviewer probes.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Honestly: isolation is the property the engine is built for. Atomicity exists only in my benchmark harness, and there's no durability. "ACID-compliant" overstates it.</strong></p>
+          <ul>
+            <li><strong>Isolation — yes, through strict two-phase locking.</strong> Every workload I measured holds all locks until commit or abort. The benchmark checks every run with a precedence-graph test, and all 100 recorded runs at up to 64 threads passed. The caveat: at 1,000 threads a race between the deadlock detector and a restarted transaction broke serializability in 2 of 5 runs. I found the cause and tested a fix, but it isn't merged.</li>
+            <li><strong>Atomicity — only in the harness.</strong> The engine has no data and no undo log: aborting a transaction releases its locks and marks it aborted. My benchmark harness adds integer values and uses deferred updates. Writes go to a private buffer, and a commit hook installs them after the commit point, while all locks are still held. An aborted attempt's buffer is thrown away, so shared data sees all of a transaction's writes or none of them. But that's in memory only.</li>
+            <li><strong>Consistency — not enforced.</strong> There are no constraints. The benchmark does verify one invariant after every run: each item's final value equals the number of committed writes to it.</li>
+            <li><strong>Durability — none.</strong> Nothing is written to disk that recovery could replay. The <code>.log</code> files are human-readable traces. A crash loses everything, and the project's own docs say so: "This project does not deal with durability at all — everything is in memory."</li>
+          </ul>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>Don't defend "ACID-compliant". A single follow-up ("where's your log?") ends that line of defence. Say instead: <em>"a transaction engine that provides serializable isolation with strict two-phase locking, with all-or-nothing in-memory writes in the benchmark; durability was out of scope."</em> Offering the limitation yourself reads as rigor, not weakness.</p>
+        </div>
+        <div class="followup">
+          <span class="box-label">Likely follow-up</span>
+          <p><strong>"Then what would it take to be ACID?"</strong> That's E6: a write-ahead log with commit records flushed before acknowledging, recovery that redoes committed work and undoes the rest, and data stored somewhere persistent.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s8">Part 1, section 8</a> · <a href="../explanations/09-results-and-takeaways.html#s10">Results, section 10</a></p>
+      </article>
+
+      <article class="qa" id="e6">
+        <div class="qa-id">E6</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Write-ahead logging (WAL):</strong> before a change reaches the data files, a log record describing it is appended to a log. On commit, a commit record is appended and flushed to disk.</li>
+            <li><strong><code>fsync</code>:</strong> the call that forces buffered file data onto stable storage. It takes milliseconds on many devices, which makes it the expensive part.</li>
+            <li><strong>Redo / undo:</strong> redo re-applies a committed change that may not have reached the data files. Undo reverses an uncommitted change that did.</li>
+            <li><strong>Checkpoint:</strong> a point where the data files are known to reflect the log up to some position, so recovery can start there.</li>
+            <li><strong>Group commit:</strong> batching several transactions' commit records into one <code>fsync</code>.</li>
+          </ul>
+        </div>
+        <h3 class="q">How would you add durability to your engine?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Recovery fundamentals, and how logging interacts with locking and throughput.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>I'd add a write-ahead log, and make commit wait for the log to be flushed.</strong></p>
+          <ol>
+            <li><strong>Persistent data:</strong> items would live in pages on disk, cached in a buffer pool, instead of only in the harness's memory.</li>
+            <li><strong>Log before data:</strong> each write appends a record (transaction ID, item, old value, new value) before the page changes. A page may be flushed only after the log records describing its changes are on disk. That's the "write-ahead" rule.</li>
+            <li><strong>Commit:</strong> append a commit record, <code>fsync</code> the log, and only then report success and release the locks. Releasing locks before the commit record is durable would let another transaction read data that could vanish in a crash.</li>
+            <li><strong>Recovery:</strong> start from the last checkpoint, redo every logged change, then undo the changes of transactions with no commit record. That's the core idea of ARIES, the recovery algorithm most textbook systems follow.</li>
+            <li><strong>Performance:</strong> one <code>fsync</code> per commit caps throughput at the device's flush rate, so batch commits (group commit): one flush can make many commit records durable.</li>
+          </ol>
+          <p>This would change my performance numbers. Commit would include a flush of a millisecond or more while locks are held. That's close to the regime my 1 ms simulated-I/O benchmark models, where concurrency paid off because transactions spent most of their time waiting.</p>
+        </div>
+        <div class="followup">
+          <span class="box-label">Likely follow-up</span>
+          <p><strong>"Why not just write the data pages at commit?"</strong> Random writes to many pages are slower than one sequential log append, and a crash in the middle of writing several pages would leave them inconsistent. With a log, the commit record is a single atomic point of truth.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/01-transactions-and-serializability.html#s2">Page 1, section 2</a> · <a href="../explanations/09-results-and-takeaways.html#s11">Results, section 11</a></p>
+      </article>
+
+      <article class="qa" id="e7">
+        <div class="qa-id">E7</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>In-place update with undo:</strong> write straight to shared data, keep the old value, and restore it on abort.</li>
+            <li><strong>Deferred update:</strong> write to a private buffer, and apply it only after committing.</li>
+            <li><strong>Cascading abort:</strong> if T2 read T1's uncommitted write and T1 aborts, T2 must abort too, and so on down the chain.</li>
+            <li><strong>Commit point:</strong> the single atomic step after which a transaction counts as committed. Here it's a compare-and-swap of its state to <code>COMMITTED</code>.</li>
+          </ul>
+        </div>
+        <h3 class="q">In your benchmark, what happens to a transaction's writes if it's aborted halfway through?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether you understand how atomicity and strictness interact in your own harness.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Nothing reaches shared data. Writes are buffered privately and installed only after the commit point, while the transaction still holds every lock.</strong></p>
+          <p>Each write computes (the latest value this transaction has seen) + 1 and stores it in a per-attempt map. Later reads of the same item by the same transaction use that map, so a transaction sees its own writes. At the end, the worker calls <code>commitTransaction(txnId, install)</code>, which runs in a fixed order:</p>
+          <ol>
+            <li>CAS the transaction's state to <code>COMMITTED</code>. If the deadlock detector already set it to <code>ABORTED</code>, the CAS fails and nothing is installed.</li>
+            <li>Run <code>install</code>: store the buffered values into the shared array. All X locks are still held, so no one can read these items mid-install.</li>
+            <li>Release all locks.</li>
+          </ol>
+          <p>If the transaction is aborted, the buffer goes out of scope and the worker retries from scratch with the same ID and priority + 1. Because nobody ever sees uncommitted values, there are no dirty reads and no cascading aborts. And once the CAS succeeds, the detector's <code>abort()</code> returns <code>false</code>, so a transaction can never be aborted halfway through installing.</p>
+        </div>
+        <div class="followup">
+          <span class="box-label">Likely follow-up</span>
+          <p><strong>"Deferred vs in-place: trade-offs?"</strong> Deferred makes abort free and needs no undo, but reads must check the private buffer first, and large transactions need memory for their buffers. In-place makes commit cheap and reads simple, but needs an undo log and exclusive locks held to the end, or other transactions could read dirty values.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s6">Part 1, section 6</a> · <a href="../explanations/08-part-harness-and-metrics.html#s6">Part 4, section 6</a></p>
+      </article>
+    </section>
+
+    <!-- ============ STRICT 2PL ============ -->
+    <section class="qa-section">
+      <h2>Strict 2PL</h2>
+
+      <article class="qa" id="e8">
+        <div class="qa-id">E8</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Conflicting operations:</strong> two operations from different transactions on the same item, where at least one is a write. Their relative order changes the outcome.</li>
+            <li><strong>Growing phase:</strong> the period in which a transaction may acquire locks. <strong>Shrinking phase:</strong> the period after its first release, in which it may only release.</li>
+            <li><strong>Lock point:</strong> the moment a transaction acquires its last lock, the end of its growing phase.</li>
+          </ul>
+        </div>
+        <h3 class="q">What is two-phase locking, and why does it need two phases? Isn't locking each operation enough?</h3>
+        <p class="tests"><span class="box-label">Tests</span>The core protocol, and the classic counterexample showing that per-operation locking is not enough.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Two-phase locking (2PL) says a transaction must acquire every lock it needs before it releases any. Once it releases one lock, it can never acquire another.</strong></p>
+          <p><strong>Why per-operation locking isn't enough.</strong> Suppose T1 does <code>lock-S(x) read(x) unlock(x)</code>, and only later <code>lock-X(x) write(x)</code>. Between the unlock and the relock, T2 can lock x, write it, and commit. T1 then writes a value computed from its stale read. That's a lost update, and in precedence-graph terms T1→T2 (T1 read before T2 wrote) and T2→T1 (T2 wrote before T1 wrote) form a cycle. Each individual operation was locked, but the transaction as a whole wasn't isolated.</p>
+          <p><strong>Why two phases fix it.</strong> With 2PL, every transaction has a lock point. If T1's operation on some item comes before T2's conflicting operation, T1 must have released that item before T2 acquired it, so T1's lock point comes before T2's. Every precedence edge therefore points from an earlier lock point to a later one, so there can't be a cycle. The serial order is simply "sorted by lock point". S3 has the full proof.</p>
+          <p><strong>In my code:</strong> a transaction starts <code>GROWING</code>, its first release switches it to <code>SHRINKING</code>, and <code>ConcurrencyManager::acquireLock</code> refuses any transaction that isn't <code>GROWING</code>.</p>
+          <p><strong>A real bug:</strong> my original upgrade code broke exactly this rule. A transaction holding S that wanted X dropped its S lock while waiting, which is a release followed by an acquisition, and the audit found about 4 committed non-serializable transactions per 1,000-transaction run because of it.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/03-locks-and-2pl.html#s4">Page 3, sections 4–6</a></p>
+      </article>
+
+      <article class="qa" id="e9">
+        <div class="qa-id">E9</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Recoverable schedule:</strong> a transaction commits only after every transaction whose data it read has committed.</li>
+            <li><strong>Cascadeless schedule:</strong> transactions read only committed data, so one abort never forces another.</li>
+            <li><strong>Strict schedule:</strong> no transaction reads <em>or overwrites</em> an item until the last transaction that wrote it has committed or aborted. That's what makes simple undo (restoring before-images) correct.</li>
+          </ul>
+        </div>
+        <h3 class="q">What's the difference between basic, strict and rigorous 2PL? Which one did you implement?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Precise definitions, whether you know that naming varies between textbooks, and whether you can say what your code does.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Variant</th><th>Rule on top of 2PL</th><th>What it adds</th></tr></thead>
+            <tbody>
+              <tr><td>Basic</td><td>none: release any lock once growing ends</td><td>conflict-serializable, but cascading aborts are possible</td></tr>
+              <tr><td>Strict</td><td>hold every <strong>X</strong> lock until commit or abort</td><td>strict schedules: no dirty reads or overwrites, so no cascading aborts</td></tr>
+              <tr><td>Rigorous</td><td>hold <strong>every</strong> lock, S and X, until commit or abort</td><td>also serializable in commit order</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p><strong>What mine does.</strong> The API has a <code>releaseLock</code> call, so on its own the API only guarantees basic 2PL. But every workload I ran releases all locks at once, at commit or abort. The text schedule files contain no early releases, and the benchmark never calls <code>releaseLock</code>. So in every measured run it's rigorous 2PL, which implies strict. The project's docs call it "strict 2PL", as several textbooks name the all-locks-held version.</p>
+          <p><strong>Why it matters.</strong> Under basic 2PL, a transaction could release an X lock early. Another transaction could then read the uncommitted value, and if the first one aborted, the second would have to abort as well. Holding locks to the end removes that possibility, and it also makes the upgrade question easier: the lock you hold can't disappear.</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>Naming varies. Silberschatz calls "everything held to the end" <em>rigorous</em>, while other books call it <em>strict</em>. Say what you mean in words: <em>"every lock, shared and exclusive, is held until commit or abort."</em> Also, before the fix, a waiting upgrade dropped its S lock mid-transaction, so strictly speaking the original version wasn't even 2PL for those transactions. If asked about the original, say so.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/03-locks-and-2pl.html#s7">Page 3, section 7</a> · <a href="../explanations/05-part-transaction-and-manager.html#s6">Part 1, section 6</a></p>
+      </article>
+
+      <article class="qa" id="e10">
+        <div class="qa-id">E10</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Compare-and-swap (CAS):</strong> an atomic "if the value is still A, set it to B" operation. Two threads racing to CAS the same value can't both succeed.</li>
+            <li><strong>Commit point:</strong> the single step after which a transaction counts as committed.</li>
+            <li><strong>Callback (hook):</strong> a function a caller passes in, for the callee to run at a specific moment.</li>
+          </ul>
+        </div>
+        <h3 class="q">Show me where in the code locks are held until commit. Walk me through <code>commitTransaction</code>, and explain why the steps are in that order.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Code-level knowledge and reasoning about ordering between commit, making changes visible, and releasing locks.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+<pre class="code"><code>bool ConcurrencyManager::commitTransaction(int txnId, const std::function&lt;void()&gt;&amp; beforeRelease) {
+    auto txn = lookup under mutex;
+    bool committed = txn-&gt;commit();          // 1. CAS GROWING/SHRINKING -&gt; COMMITTED
+    if (committed) {
+        if (beforeRelease) beforeRelease();  // 2. install buffered writes, all locks still held
+        lockManager.releaseAllLocks(txnId);  // 3. release everything at once
+        unregister and erase;                // 4. forget the transaction
+    }
+    return committed;
+}</code></pre>
+          <p><strong>Step 1 comes first</strong> because the deadlock detector might choose this transaction as a victim at the same moment. Both commit and abort are CAS loops on one atomic state, so exactly one wins. If commit wins, the detector's abort returns false and it moves on. If abort wins, commit returns false and the worker retries. So no transaction ever installs writes and then gets aborted.</p>
+          <p><strong>Step 2 comes before step 3</strong> because while the X locks are held, no other transaction can read the items. By the time anyone can see them, they already hold the new values. If I released first and installed second, another transaction could lock the item in between, read the old value, and later write back something based on it: a lost update.</p>
+          <p><strong>Step 3 releases all at once.</strong> There are no early releases anywhere on the measured path. That's what makes it rigorous 2PL in practice. <code>abortTransaction</code> follows the same shape without the hook: CAS to <code>ABORTED</code>, release all locks, unregister.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s2">Part 1, sections 2</a> and <a href="../explanations/05-part-transaction-and-manager.html#s6">6</a></p>
+      </article>
+
+      <article class="qa" id="e11">
+        <div class="qa-id">E11</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>MVCC (multi-version concurrency control):</strong> writers create new versions instead of overwriting, so readers see a consistent snapshot without taking locks.</li>
+            <li><strong>Snapshot isolation:</strong> each transaction reads from a snapshot taken at its start, and a write fails if another committed transaction wrote the same item first. It allows an anomaly called <em>write skew</em>: two transactions each read both items and each write a different one, together breaking a constraint neither broke alone.</li>
+            <li><strong>OCC (optimistic concurrency control):</strong> run without locks, then validate at commit that nothing you read was changed. If something was, abort.</li>
+          </ul>
+        </div>
+        <h3 class="q">What are the downsides of strict 2PL? When would you choose something else?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Breadth: can you place 2PL among the alternatives and pick one for a workload?</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Strict 2PL is pessimistic. It holds locks for the whole transaction, so readers block writers, writers block readers, and deadlocks are possible.</strong> The cost shows up exactly where contention is high. In my high-contention benchmark (20 items, 30% writes, 1 ms per operation), throughput peaked at 2.83× with 4 threads and fell to 0.25× at 64 threads, with 3,844 deadlock aborts for 1,000 commits.</p>
+          <p>Alternatives, and when I'd use each:</p>
+          <ul>
+            <li><strong>MVCC with snapshot isolation</strong> for read-heavy workloads. Readers never block and are never blocked. The catch is write skew, so for true serializability you need serializable snapshot isolation, which detects dangerous read/write patterns and aborts one transaction.</li>
+            <li><strong>OCC</strong> when conflicts are rare, as in my low-contention benchmark where two transactions shared an item about 1.6% of the time. It skips lock management entirely, but wastes whole transactions when validation fails, so it thrashes under high contention.</li>
+            <li><strong>Timestamp ordering, or 2PL with wait-die / wound-wait</strong> when you want no deadlock detection at all. Transactions are ordered by timestamp, and conflicts either wait or abort by that order.</li>
+            <li><strong>Deterministic or partitioned serial execution</strong> for short, in-memory, CPU-bound transactions. My CPU-only benchmark was fastest on one thread.</li>
+          </ul>
+          <p>2PL remains a good default when you need serializability, writes are common, and transactions are short.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s4">Results, section 4</a></p>
+      </article>
+    </section>
+
+    <!-- ============ DETECTION ============ -->
+    <section class="qa-section">
+      <h2>Graph-based deadlock detection</h2>
+
+      <article class="qa" id="e12">
+        <div class="qa-id">E12</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Prevention:</strong> make deadlock impossible, e.g. by acquiring locks in a global order, or with wait-die / wound-wait, which use timestamps to decide who waits and who aborts.</li>
+            <li><strong>Timeout:</strong> abort any transaction that has waited longer than a fixed limit.</li>
+            <li><strong>Detection:</strong> let deadlocks happen, find them by looking for a cycle in the "who waits for whom" graph, and abort one transaction per cycle.</li>
+            <li><strong>Detection interval \(I\):</strong> how often the detector runs. A deadlock waits about \(I/2\) on average before it's noticed.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why did you choose deadlock detection instead of prevention or lock timeouts?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Design trade-off reasoning, with costs on both sides.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Detection aborts a transaction only when a real deadlock exists. Prevention and timeouts both abort transactions that might have finished fine.</strong></p>
+          <ul>
+            <li><strong>Global lock ordering</strong> needs every transaction to know all its items up front and lock them in sorted order. My text-schedule transactions touch items in arbitrary order, and in general a transaction discovers what it needs as it runs.</li>
+            <li><strong>Wait-die and wound-wait</strong> never deadlock, but they abort based on age whenever a conflict occurs, even when no cycle exists. That causes more aborts when conflicts are frequent but cycles rare.</li>
+            <li><strong>Timeouts</strong> are simple, but the limit is a guess. Too short, and slow-but-healthy transactions die. Too long, and a real deadlock stalls everyone queued behind it. The original code actually had a 5-second lock timeout. A commit on 2025-04-12 replaced it with detection.</li>
+          </ul>
+          <p><strong>The costs of detection.</strong> A deadlock sits for about half the detection interval before anyone acts (50 ms average in the text harness at 100 ms, 5 ms in the benchmark at 10 ms). Each pass also takes the lock-table mutex to snapshot the graph, and you need a victim-selection policy. Those costs were worth it for arbitrary transactions.</p>
+          <p>I'd add one nuance. In my benchmark every transaction's operations are known up front, so there, sorting the items and taking the needed lock type in that order would eliminate deadlocks entirely (T17).</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s2">Page 4, section 2</a> · <a href="../explanations/06-part-lock-manager.html#s9">Part 2, section 9</a></p>
+      </article>
+
+      <article class="qa" id="e13">
+        <div class="qa-id">E13</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Wait-for graph (WFG):</strong> one node per transaction, and an edge T1→T2 if T1 is waiting for a lock T2 holds. A cycle means a deadlock.</li>
+            <li><strong>Depth-first search (DFS):</strong> explore as deep as possible along edges before backtracking. A node that's still on the current path and gets reached again closes a cycle. That edge is called a <em>back edge</em>.</li>
+            <li><strong>Victim:</strong> the transaction aborted to break a cycle.</li>
+          </ul>
+        </div>
+        <h3 class="q">Explain how your deadlock detector works, in about a minute.</h3>
+        <p class="tests"><span class="box-label">Tests</span>A crisp summary before the deep dive (D10–D18 go deeper).</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <ol>
+            <li><strong>A background thread</strong> wakes every I milliseconds: 100 ms in the text harness, 10 ms in the benchmark.</li>
+            <li><strong>Snapshot.</strong> Under one acquisition of the lock-table mutex, it lists every waiter→holder pair: a waiting S request points at every X holder, and a waiting X request at every other holder. Transactions already marked aborted are skipped. Because the snapshot is a single instant, any cycle in it is a real deadlock.</li>
+            <li><strong>Search.</strong> A DFS from each unvisited node, in sorted ID order, keeps the current path. On a back edge it cuts out exactly the nodes on the cycle, excluding "tail" transactions that merely wait on it.</li>
+            <li><strong>Victim.</strong> The cycle member with the lowest priority number. Ties go to the highest ID.</li>
+            <li><strong>Break it.</strong> CAS the victim's state to <code>ABORTED</code>, release all its locks (which grants waiting requests and wakes threads), remove it from the graph, and search again until there's no cycle left.</li>
+            <li><strong>Recovery.</strong> The victim's thread wakes, sees it was aborted, backs off, and restarts with priority + 1.</li>
+          </ol>
+          <p>One search is \(O(V + E)\), and a pass with \(k\) victims runs \(k + 1\) searches.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html">Part 3</a></p>
+      </article>
+    </section>
+
+    <!-- ============ C++ ============ -->
+    <section class="qa-section">
+      <h2>Multi-threaded C++</h2>
+
+      <article class="qa" id="e14">
+        <div class="qa-id">E14</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><code>std::mutex</code> with <code>std::lock_guard</code> (locks for a scope) or <code>std::unique_lock</code> (can unlock early, and is required by condition variables).</li>
+            <li><code>std::condition_variable</code>: <code>wait(lock, predicate)</code> sleeps until notified and the predicate is true.</li>
+            <li><code>std::atomic&lt;T&gt;</code>: single operations (load, store, compare-exchange) are indivisible without a mutex.</li>
+            <li><code>std::shared_ptr</code>: a reference-counted pointer. The object lives until the last copy is gone.</li>
+            <li><code>std::barrier</code> / <code>std::latch</code> (C++20): release a group of threads at the same moment.</li>
+          </ul>
+        </div>
+        <h3 class="q">Which C++ concurrency primitives did you use, and what did each one solve?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Hands-on C++ concurrency, and matching each tool to a specific problem.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Primitive</th><th>Where</th><th>Problem it solves</th></tr></thead>
+            <tbody>
+              <tr><td><code>std::mutex</code></td><td>lock table, facade's transaction map, registry, detector graph, logger</td><td>protects shared in-memory structures from data races</td></tr>
+              <tr><td><code>std::condition_variable</code> + <code>unique_lock</code></td><td>waiting for a lock</td><td>sleep without holding the mutex, and wake to re-check a predicate. Handles spurious wakeups.</td></tr>
+              <tr><td><code>condition_variable::wait_for</code></td><td>detector's sleep between passes</td><td>periodic loop that shutdown can interrupt immediately</td></tr>
+              <tr><td><code>std::atomic&lt;TransactionState&gt;</code> + <code>compare_exchange_weak</code></td><td>commit and abort</td><td>the owner's commit and the detector's abort race, and exactly one must win</td></tr>
+              <tr><td><code>std::shared_ptr</code></td><td>transaction registry</td><td>a looked-up transaction stays alive even if its owner erases it concurrently: no dangling pointers</td></tr>
+              <tr><td><code>std::recursive_mutex</code></td><td>resource allocation graph</td><td>one locked method calls another that locks the same mutex</td></tr>
+              <tr><td><code>std::barrier</code></td><td>text harness</td><td>release all 1,000 transaction threads together, to maximize contention</td></tr>
+              <tr><td><code>std::latch</code>, <code>std::atomic</code> counters</td><td>benchmark</td><td>start the timed region at once, hand out transactions, count commits and aborts</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>Several of these came from fixing bugs. The transaction state used to be a plain enum written by two threads, and the registry used to be an unlocked map of raw pointers. Both were data races, which is undefined behaviour in C++.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/02-threads-mutexes-condvars.html">Page 2</a> · <a href="../explanations/05-part-transaction-and-manager.html#s2">Part 1, sections 2–3</a></p>
+      </article>
+
+      <article class="qa" id="e15">
+        <div class="qa-id">E15</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>Databases use the word "lock" for two different things. A <strong>latch</strong> is a short-term mutex that protects an in-memory data structure (a page, a hash table, a lock table) while a thread modifies it. A <strong>lock</strong> is a logical, transaction-level right to a data item, held possibly for the whole transaction and managed by a lock manager.</p>
+        </div>
+        <h3 class="q">What's the difference between a latch and a lock? Which is which in your code?</h3>
+        <p class="tests"><span class="box-label">Tests</span>A database-internals distinction that separates people who've built one from people who've read about one.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th></th><th>Latch</th><th>Lock</th></tr></thead>
+            <tbody>
+              <tr><td>Protects</td><td>in-memory structures</td><td>logical data items</td></tr>
+              <tr><td>Held by</td><td>a thread</td><td>a transaction</td></tr>
+              <tr><td>Duration</td><td>microseconds, one critical section</td><td>until commit or abort</td></tr>
+              <tr><td>Modes</td><td>usually just exclusive, or read/write</td><td>S, X, sometimes U and intention modes</td></tr>
+              <tr><td>Deadlocks</td><td>avoided by a fixed acquisition order. Never detected.</td><td>detected (or prevented) by the DBMS</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p><strong>In my code:</strong> <code>LockManager::mtx</code>, the registry mutex and the detector's graph mutex are latches. The <code>LockRequest</code> entries in the lock table (transaction ID, S or X, granted or not) are locks.</p>
+          <p>The key rule is <strong>never wait for a lock while holding a latch</strong>. My lock manager appends the pending request and then calls <code>cv.wait</code>, which releases the latch while the thread sleeps. If it held the latch while waiting, the thread that holds the lock could never acquire the latch to release it, and neither could the detector.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/02-threads-mutexes-condvars.html#s3">Page 2, sections 3</a> and <a href="../explanations/02-threads-mutexes-condvars.html#s7">7</a></p>
+      </article>
+
+      <article class="qa" id="e16">
+        <div class="qa-id">E16</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Lock upgrade:</strong> a transaction holding S on an item asks for X on the same item, typically read-then-write.</li>
+            <li><strong>Lost update schedule:</strong> <code>r1(N) w2(N) c2 w1(N) c1</code>. T1 reads N, T2 overwrites and commits, then T1 writes based on its stale read.</li>
+            <li><strong>Log replay:</strong> reconstructing the true order of events from a log written while the relevant mutex was held.</li>
+          </ul>
+        </div>
+        <h3 class="q">Tell me about the hardest bug you found in this project. How did you find it, fix it, and make sure it stays fixed?</h3>
+        <p class="tests"><span class="box-label">Tests</span>A debugging story told as isolate → cause → fix → prevention, with evidence.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>The upgrade gap: my lock manager let committed transactions produce non-serializable schedules, even though it never granted two incompatible locks at the same time.</strong></p>
+          <p><strong>Symptom and suspicion.</strong> Every test run finished, and every transaction committed. But nothing actually checked isolation, so I audited it.</p>
+          <p><strong>Isolate.</strong> The lock manager logs every grant, upgrade and release while holding its mutex, so the log order is the true order of lock-table changes. I replayed the logs with two checks:</p>
+          <ul>
+            <li>Were incompatible locks ever held together? Never, in every log.</li>
+            <li>For each "waiting to upgrade" event, did another transaction get X on that item before the upgrader did, with the upgrader then committing? Yes: 4 cases per run of the 1,000-transaction random workload, in both runs.</li>
+          </ul>
+          <p><strong>Cause.</strong> I traced one case by hand. Transaction T314 read N, then asked to upgrade to X. The upgrade code <em>erased its granted S lock</em> and re-queued the request as a fresh X. In that gap, T525 got X on N, wrote, and committed, and so did T916. Then T314 got X and wrote based on its stale read: \(r_{314}(N) \lt w_{525}(N) \lt w_{314}(N)\), a precedence cycle. Dropping S and later taking X is a release followed by an acquisition, which violates 2PL itself.</p>
+          <p><strong>Fix.</strong> Keep the S entry granted and add a pending X entry beside it. When a release happens, grant pending upgrades before any other waiter, and when the X is granted, remove the now-redundant S. A side effect: two readers who both try to upgrade now deadlock, which the detector already handles.</p>
+          <p><strong>Prevention.</strong> A regression test holds S for two transactions, starts an upgrade, and asserts four things: the upgrader still holds S while waiting, no third transaction can get X in the window, the upgrade completes once the other reader leaves, and the upgrader ends with a single X entry. I also built serializability checks into the benchmark: a precedence graph over every committed operation, plus a lost-update invariant, on every run. All 100 recorded runs at up to 64 threads passed.</p>
+        </div>
+        <div class="followup">
+          <span class="box-label">Likely follow-up</span>
+          <p><strong>"Anything still broken?"</strong> Yes: a race at 1,000 threads where the detector's delayed lock release hits the <em>restarted</em> transaction, which reuses the same ID. That's S12, which is also a good story if they want a second one.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s6">Part 2, section 6</a></p>
+      </article>
+
+      <article class="qa" id="e17">
+        <div class="qa-id">E17</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Member initialization order:</strong> C++ constructs a class's data members in the order they are <em>declared</em>, whatever order the constructor's initializer list uses.</li>
+            <li><strong>Undefined behaviour (UB):</strong> code the standard gives no meaning to. It can crash, appear to work, or differ between platforms.</li>
+            <li><strong>Zero-initialized globals:</strong> an object with static storage is filled with zero bytes before its constructor runs.</li>
+          </ul>
+        </div>
+        <h3 class="q">Your program crashed at startup on macOS, but apparently worked on the original machine. What was going on?</h3>
+        <p class="tests"><span class="box-label">Tests</span>C++ object lifetime, UB reasoning, and platform differences.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>A member was constructed before the members it depended on, so it locked a mutex that didn't exist yet.</strong></p>
+          <p><code>ConcurrencyManager</code> declared <code>LockManager lockManager</code> before <code>Logger logger</code> and <code>ResourceAllocationGraph rag</code>. The initializer list was written as <code>logger(...), rag(logger), lockManager(logger, rag)</code>, but C++ ignores that order, so <code>lockManager</code> was built first, holding references to raw memory. Its constructor immediately logged a message, which locked the logger's <code>std::mutex</code> before the mutex had been constructed. Clang even warns about it: <code>field 'rag' will be initialized after field 'lockManager' [-Wreorder-ctor]</code>.</p>
+          <p><strong>Why the platforms differed.</strong> The manager was a global, so its memory was zero-filled before construction. On macOS, a valid <code>pthread_mutex</code> carries a non-zero signature, so locking an all-zero one fails with <code>EINVAL</code>, and libc++ throws <code>std::system_error: mutex lock failed: Invalid argument</code>. That produced exit code 134 on every test file. On Linux with glibc, an unlocked mutex happens to be all zero bytes, so it most likely "worked" by luck. That's an inference, because I didn't test Linux. Either way, it was undefined behaviour.</p>
+          <p><strong>Fix:</strong> reorder the declarations to <code>logger</code>, <code>rag</code>, <code>lockManager</code>, add a comment explaining why the order matters, and build with <code>-Wall -Wextra</code>, so this class of bug shows up as a warning.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/02-threads-mutexes-condvars.html#s9">Page 2, section 9</a> · <a href="../explanations/05-part-transaction-and-manager.html#s7">Part 1, section 7</a></p>
+      </article>
+
+      <article class="qa" id="e18">
+        <div class="qa-id">E18</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Phantom:</strong> a row that appears in a repeated range query because another transaction inserted it in between. Locks on existing items can't stop it, because the new item didn't exist to be locked.</li>
+            <li><strong>Multiple-granularity locking:</strong> locks on tables, pages and rows, with intention modes (IS, IX, SIX) that announce finer-grained locks further down.</li>
+            <li><strong>Lock escalation:</strong> replacing many row locks with one table lock to save memory.</li>
+            <li><strong>Isolation levels:</strong> read committed, repeatable read, snapshot, serializable.</li>
+          </ul>
+        </div>
+        <h3 class="q">What would a production database's concurrency control have that yours doesn't?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Self-awareness about scope, and breadth of database knowledge.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <ul>
+            <li><strong>Durability and recovery:</strong> a write-ahead log, checkpoints and crash recovery. Mine has none (E6).</li>
+            <li><strong>Phantom protection:</strong> predicate, range or next-key locks. Mine locks fixed item IDs only. All my workloads use a fixed item set, so phantoms never arise in my measurements, but a range query would expose it.</li>
+            <li><strong>Lock granularity:</strong> table, page and row locks with intention modes, plus lock escalation. Mine has one flat level of items.</li>
+            <li><strong>Isolation levels and MVCC:</strong> so readers don't block writers. Mine is serializable-only and fully pessimistic.</li>
+            <li><strong>A scalable lock manager:</strong> a hash-partitioned lock table with a latch per bucket, and per-request wait queues. Mine uses one global mutex and one condition variable, so every release wakes every waiter, and the CPU-only benchmark got slower as threads were added.</li>
+            <li><strong>Fairness and starvation guarantees:</strong> FIFO or age-aware grant queues, and victim policies that keep a transaction's original timestamp. Mine lets new readers barge ahead of queued writers, and aging didn't prevent one transaction from being aborted 1,980 times in a 1,000-thread run.</li>
+            <li><strong>Update (U) locks</strong> to avoid the classic upgrade deadlock, and lock-wait timeouts as a safety net alongside detection.</li>
+          </ul>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s8">Part 1, section 8</a> · <a href="../explanations/09-results-and-takeaways.html#s11">Results, section 11</a></p>
+      </article>
+    </section>
+
+  </main>
+  <div class="pager">
+    <a href="index.html"><span class="lbl">Back</span>← Contents</a>
+    <a class="next" href="02-2pl-serializability-threads.html"><span class="lbl">Next</span>2 · 2PL, serializability, 1,000 threads →</a>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,77 @@
+.qindex{ background:var(--paper-raised); border:1px solid var(--rule); border-radius:10px; padding:18px 22px; margin:0 0 36px; }
+.qindex h2{ font-size:18px; margin:0 0 10px; }
+.qindex .group{ font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); margin:14px 0 6px; }
+.qindex .group:first-of-type{ margin-top:0; }
+.qindex ul{ list-style:none; padding:0; margin:0; columns:2; column-gap:28px; }
+.qindex li{ font-size:14px; margin:0 0 6px; break-inside:avoid; max-width:none; }
+.qindex a{ text-decoration:none; color:var(--ink); }
+.qindex a:hover{ color:var(--accent); }
+.qindex .qn{ font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:11.5px; color:var(--accent); margin-right:6px; }
+
+.qa-section{ margin-bottom:12px; }
+.qa-section > h2{ margin:48px 0 4px; padding-bottom:10px; border-bottom:2px solid var(--ink); }
+
+.qa{ padding:30px 0 8px; border-top:1px solid var(--rule); scroll-margin-top:16px; }
+.qa-section > h2 + .qa{ border-top:none; }
+.qa-id{ font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:12px; color:var(--accent); letter-spacing:.08em; }
+.qa h3.q{ font-family:'Fraunces', Georgia, serif; font-size:21px; font-weight:600; line-height:1.3; margin:4px 0 8px; text-wrap:balance; color:var(--ink); }
+.tests{ font-size:14px; color:var(--ink-soft); margin:0 0 16px; }
+.tests .box-label{ display:inline; margin-right:8px; color:var(--ink-soft); }
+
+.answer{ border-left:3px solid var(--good); padding:2px 0 2px 18px; margin:0 0 16px; }
+.answer > .box-label{ color:var(--good); }
+.answer p:last-child, .answer ul:last-child, .answer ol:last-child{ margin-bottom:0; }
+
+.followup{ background:var(--paper-raised); border:1px solid var(--rule); border-radius:8px; padding:14px 18px; margin:0 0 16px; font-size:15px; }
+.followup .box-label{ color:var(--accent); }
+.followup p:last-child{ margin-bottom:0; }
+
+.review{ font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:12px; color:var(--ink-soft); margin:0 0 12px; }
+.review a{ color:var(--ink-soft); }
+
+pre.code{
+  background:var(--paper-raised); border:1px solid var(--rule); border-radius:6px;
+  padding:14px 16px; margin:14px 0; overflow-x:auto;
+  font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:13px; line-height:1.55; color:var(--ink);
+}
+pre.code code{ background:none; padding:0; font-size:inherit; border-radius:0; }
+
+.schema{ background:var(--accent-soft); border-radius:8px; padding:14px 18px; margin:0 0 24px; }
+.schema .box-label{ color:var(--accent); }
+
+.cv{ background:var(--paper-raised); border:1px solid var(--rule); border-radius:10px; padding:18px 22px; margin:18px 0 28px; }
+.cv .cv-title{ font-weight:600; margin:0 0 8px; }
+.cv ul{ margin:0; }
+
+@media (max-width:600px){
+  .qindex ul{ columns:1; }
+  .answer{ padding-left:12px; }
+}
+
+/* click-to-reveal answers */
+details.reveal{ margin:0 0 14px; }
+details.reveal > summary{
+  cursor:pointer; list-style:none; display:inline-block;
+  font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:12px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--accent); border:1px solid var(--rule); border-radius:999px; padding:6px 14px; margin:0 0 16px; background:var(--paper-raised);
+}
+details.reveal > summary::-webkit-details-marker{ display:none; }
+details.reveal > summary::before{ content:'▸ Show answer'; }
+details.reveal[open] > summary::before{ content:'▾ Hide answer'; }
+details.reveal > summary:hover{ border-color:var(--accent); }
+.reveal-all{ font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:12px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--ink); background:var(--paper-raised); border:1px solid var(--rule); border-radius:999px; padding:6px 14px; cursor:pointer; margin:0 0 24px; }
+.reveal-all:hover{ border-color:var(--accent); color:var(--accent); }
+.verdict{ font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:2px 8px; border-radius:4px; white-space:nowrap; }
+.verdict.ok{ background:var(--good-soft, #e3f1e7); color:var(--good); }
+.verdict.warn{ background:var(--accent-soft); color:var(--accent); }
+.verdict.bad{ background:var(--impl-soft, #f8e1dc); color:var(--impl); }
+.say{ margin:6px 0 0; font-size:14.5px; color:var(--ink-soft); }
+
+/* prerequisites box, shown before each question */
+.prereq{ background:var(--accent-soft); border-radius:8px; padding:14px 18px; margin:10px 0 16px; font-size:15px; }
+.prereq .box-label{ color:var(--accent); }
+.prereq p:last-child, .prereq ul:last-child{ margin-bottom:0; }
+.prereq ul{ margin-bottom:8px; }
+.tbl-wrap td.num{ white-space:nowrap; }
+.qa details.reveal + .review{ margin-top:4px; }

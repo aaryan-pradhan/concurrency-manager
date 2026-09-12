@@ -18,45 +18,46 @@
     <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Part 2 · LockManager</span></div>
     <span class="stage-tag">Part 2</span>
     <h1 class="title">The LockManager: granting, waiting, upgrading</h1>
-    <p class="dek">The lock table, its compatibility check, how a blocked transaction sleeps and wakes, and the upgrade path that gives up a shared lock mid-transaction. The audit replayed the logs and found committed schedules that aren't serializable, and this page shows one of them line by line.</p>
+    <p class="dek">The lock table, its compatibility check, how a blocked transaction sleeps and wakes, how releases hand locks to waiters, and the snapshot the deadlock detector reads. It also covers the upgrade bug the audit found in real logs, which let committed schedules be non-serializable, and how commit 47e3a19 fixed it.</p>
   </header>
   <main>
 
-    <div class="recap"><span class="box-label">Uses</span>the precedence-graph test and schedule S₂ from <a href="01-transactions-and-serializability.html#s7">page 1, section 7</a> · mutexes and condition variables from <a href="02-threads-mutexes-condvars.html#s3">page 2, sections 3</a>–<a href="02-threads-mutexes-condvars.html#s5">5</a> · the thundering herd from <a href="02-threads-mutexes-condvars.html#s6">page 2, section 6</a> · unlock-before-wait from <a href="02-threads-mutexes-condvars.html#s7">page 2, section 7</a> · compatibility, barging and upgrades from <a href="03-locks-and-2pl.html#s1">page 3, sections 1–3</a> · the lock-point proof from <a href="03-locks-and-2pl.html#s6">page 3, section 6</a> · RAG edges from <a href="04-deadlocks-and-wait-for-graphs.html#s3">page 4, section 3</a> · the facade and the reordered build from <a href="05-part-transaction-and-manager.html#s7">Part 1</a>.</div>
+    <div class="recap"><span class="box-label">Uses</span>the precedence-graph test and schedule S₂ from <a href="01-transactions-and-serializability.html#s7">page 1, section 7</a> · mutexes and condition variables from <a href="02-threads-mutexes-condvars.html#s3">page 2, sections 3</a>–<a href="02-threads-mutexes-condvars.html#s5">5</a> · the thundering herd from <a href="02-threads-mutexes-condvars.html#s6">page 2, section 6</a> · unlock-before-wait from <a href="02-threads-mutexes-condvars.html#s7">page 2, section 7</a> · compatibility, barging and upgrades from <a href="03-locks-and-2pl.html#s1">page 3, sections 1–3</a> · the lock-point proof from <a href="03-locks-and-2pl.html#s6">page 3, section 6</a> · RAG and WFG edges from <a href="04-deadlocks-and-wait-for-graphs.html#s3">page 4, sections 3–4</a> · the facade, the registry and the aborted-state checks from <a href="05-part-transaction-and-manager.html">Part 1</a>.</div>
 
     <section>
       <div class="spec-quote">
         <span class="box-label">docs/11-module-lock-manager.md</span>
         <blockquote>"This is the busiest, most detailed class in the project — it's the actual mechanism behind everything described in Locks and Concurrency Control. […] This means: while an upgrade is pending, the transaction is not holding any lock at all on that resource for a brief window — it gave up the shared lock to ask for the stronger one."</blockquote>
       </div>
-      <p>The docs notice the upgrade window but describe it as harmless. Page 3, sections 3 and 6 say otherwise: giving up S and later taking X is a release followed by an acquisition, which is outside 2PL. Section 6 below checks whether that window was actually exploited in real runs.</p>
+      <p>The docs describe the <em>pre-fix</em> upgrade and call the window harmless. Page 3, sections 3 and 6 show why it isn't: giving up S and later taking X is a release followed by an acquisition, which breaks 2PL. Section 6 shows the audit's evidence that the window was hit in real runs, and the current code, which keeps the S lock. The docs haven't been updated.</p>
     </section>
 
     <section>
       <h2 id="s1">1. Data structures</h2>
-<pre><code>// include/lock_manager.h:17-53
+<pre><code>// include/lock_manager.h:18-53 (abridged)
 enum class LockType { SHARED, EXCLUSIVE };
 struct LockRequest { int transactionId; LockType type; bool granted; };
 
-std::unordered_map&lt;int, std::vector&lt;LockRequest&gt;&gt; lockTable;  // resource -&gt; granted + waiting
-mutable std::mutex mtx;                     // one latch for the whole table
-std::condition_variable cv;                 // one condition variable for every waiter
+// resourceId -&gt; granted and waiting requests. An upgrading transaction has two entries
+// while it waits: its granted SHARED lock and an ungranted EXCLUSIVE request.
+std::unordered_map&lt;int, std::vector&lt;LockRequest&gt;&gt; lockTable;
+mutable std::mutex mtx;            // one latch for the whole table
+std::condition_variable cv;        // one condition variable for every waiter
 std::set&lt;int&gt; waitingTransactions;
-const std::chrono::milliseconds lockTimeout{5000};   // declared, never used
 ResourceAllocationGraph &amp;rag;</code></pre>
-      <p>This is a single global latch and a single condition variable for all resources. Every acquire, release and detector query in the process serializes on <code>mtx</code>, and every release wakes every waiter, whatever resource it waits for.</p>
+      <p>There's a single global latch and a single condition variable for every resource. Every acquire, release and detector snapshot in the process serializes on <code>mtx</code>, and every release wakes every waiter, whatever resource each one is waiting for. Most of the performance story in <a href="09-results-and-takeaways.html">the results</a> comes from those two lines.</p>
     </section>
 
     <section>
       <h2 id="s2">2. isCompatible: the matrix, with the queue ignored</h2>
-<pre><code>// src/lock_manager.cpp:124-143
+<pre><code>// src/lock_manager.cpp:17-37 (abridged)
 if (request.type == LockType::SHARED)
-    return std::none_of(..., [](const LockRequest&amp; r){ return r.granted &amp;&amp; r.type == LockType::EXCLUSIVE; });
-return std::none_of(..., [&amp;request](const LockRequest&amp; r){ return r.granted &amp;&amp; r.transactionId != request.transactionId; });</code></pre>
-      <p>This is the page 3, section 1 matrix exactly. S is compatible unless some granted lock is X, and X is compatible only if no other transaction holds anything.</p>
+    return none_of(requests, [](const LockRequest&amp; r){ return r.granted &amp;&amp; r.type == LockType::EXCLUSIVE; });
+return none_of(requests, [&amp;](const LockRequest&amp; r){ return r.granted &amp;&amp; r.transactionId != request.transactionId; });</code></pre>
+      <p>This is the page 3, section 1 matrix exactly. S is compatible unless some granted lock is X. X is compatible only if no <em>other</em> transaction holds anything, so a transaction's own S lock doesn't block its upgrade.</p>
       <div class="callout impl">
-        <span class="box-label">In the code · a barging grant policy, with no FIFO and no priority</span>
-        <p>Only <code>granted</code> entries are consulted, so a newly arriving S request is granted even when an X request has been queued for a long time (the writer-starvation example on page 3, section 2). When a lock is released, waiting requests are granted by scanning the vector in insertion order (section 5). Transaction priority plays no part in who gets a lock. It's used only when choosing a deadlock victim (<a href="07-part-deadlock-detector.html#s4">Part 3</a>).</p>
+        <span class="box-label">In the code · a barging grant policy, with no priority</span>
+        <p>Only <code>granted</code> entries are consulted. A newly arriving S request is therefore granted at once, even if an X request has been queued for a long time. That's the writer-starvation pattern from page 3, section 2. Transaction priority plays no part in who gets a lock. It's used only when choosing a deadlock victim (<a href="07-part-deadlock-detector.html#s7">Part 3, section 7</a>).</p>
       </div>
     </section>
 
@@ -64,93 +65,120 @@ return std::none_of(..., [&amp;request](const LockRequest&amp; r){ return r.gran
       <h2 id="s3">3. acquireLock: the decision tree</h2>
       <div class="tbl-wrap">
       <table>
-        <caption>src/lock_manager.cpp:294-377</caption>
-        <thead><tr><th>Situation</th><th>Action</th><th>Returns</th></tr></thead>
+        <caption>src/lock_manager.cpp:315-386</caption>
+        <thead><tr><th>Situation (checked under mtx)</th><th>Action</th><th>Returns</th></tr></thead>
         <tbody>
           <tr><td>transaction missing or <code>ABORTED</code></td><td>log a warning</td><td><code>false</code></td></tr>
           <tr><td>already holds the same or a stronger lock</td><td>nothing</td><td><code>true</code></td></tr>
-          <tr><td>holds S, wants X</td><td>unlock, call <code>upgradeLock</code> (section 6)</td><td>its result</td></tr>
-          <tr><td>compatible</td><td>push a granted request, add assignment edge \(R \to T\)</td><td><code>true</code></td></tr>
+          <tr><td>holds S, wants X</td><td><code>upgradeLockInternal</code> (section 6): granted in place, denied, or queued, then unlock and <code>waitForLock</code></td><td>its result</td></tr>
+          <tr><td>compatible with granted locks</td><td>push a granted request, add assignment edge \(R \to T\)</td><td><code>true</code></td></tr>
           <tr><td>incompatible, <code>wait == false</code></td><td>nothing</td><td><code>false</code></td></tr>
-          <tr><td>incompatible, <code>wait == true</code></td><td>add request edge \(T \to R\), push a waiting request, <strong>unlock</strong>, call <code>waitForLock</code></td><td>its result</td></tr>
+          <tr><td>incompatible, <code>wait == true</code></td><td>add request edge \(T \to R\), push a pending request, <strong>unlock</strong>, call <code>waitForLock</code></td><td>its result</td></tr>
         </tbody>
       </table>
       </div>
-      <p>The unlock before waiting follows page 2, section 7: if a thread slept holding <code>mtx</code>, the whole engine and the detector would stop.</p>
+      <p>The unlock before waiting follows page 2, section 7. If a thread slept holding <code>mtx</code>, the whole engine and the detector would stop with it. The first row is checked under <code>mtx</code> because the detector always marks a victim <code>ABORTED</code> <em>before</em> it takes <code>mtx</code> to release that victim's locks. Once a thread holds <code>mtx</code> and sees the state, no aborted transaction can slip past the check.</p>
     </section>
 
     <section>
-      <h2 id="s4">4. waitForLock, and a success reported as failure</h2>
-<pre><code>// src/lock_manager.cpp:18-110 (abridged)
-auto canAcquireLock = [...]() {
-    Transaction* txn = Transaction::GetTransaction(txnId);
-    if (txn == nullptr || txn-&gt;getState() == TransactionState::ABORTED) return true;
-    if (lockTable.find(resourceId) == lockTable.end()) return true;
-    auto it = /* this transaction's request on resourceId */;
-    if (it == requests.end() || it-&gt;granted) return true;      // (a) already granted
-    return isCompatible(resourceId, *it);                       // (b) grantable now
-};
+      <h2 id="s4">4. waitForLock: three reasons to wake</h2>
+<pre><code>// src/lock_manager.cpp:263-306 (abridged)
 std::unique_lock&lt;std::mutex&gt; lock(mtx);
-cv.wait(lock, canAcquireLock);
-if (aborted) { remove my waiting request; return false; }
-auto it = find_if(..., [txnId](const LockRequest&amp; req){ return !req.granted &amp;&amp; req.transactionId == txnId; });
-if (it != requests.end() &amp;&amp; isCompatible(resourceId, *it)) { it-&gt;granted = true; ...; return true; }
-return false;</code></pre>
-      <div class="callout impl">
-        <span class="box-label">In the code · a waiter that is granted by the releaser returns false</span>
-        <p>Releases grant waiters directly: <code>releaseLock</code> and <code>releaseAllLocks</code> set <code>req.granted = true</code> for every compatible waiting request before calling <code>notify_all</code> (section 5). The woken waiter's predicate is true through branch (a). The post-wait search then looks only for a request with <code>!req.granted</code>, finds none, and falls through to <code>return false</code>. The lock <strong>is</strong> held in the table, but the caller is told it isn't.</p>
-        <p>Consequences: (1) <code>ConcurrencyManager</code> skips <code>txn-&gt;acquireLock</code>, so <code>locksHeld</code> is missing that resource (Part 1, section 2). (2) The harness counts a "lock failure". (3) Isolation isn't affected by this bug, because the lock table, which is what other transactions check, is correct. The transaction goes on to its next operation while actually holding the lock, and releases it at commit via <code>releaseAllLocks</code>, which scans the table.</p>
+auto canProceed = [&amp;]() {
+    if (isAbortedInternal(txnId)) return true;                        // (a) chosen as a victim
+    long index = pendingRequestIndexInternal(txnId, resourceId);
+    if (index &lt; 0) return true;                                       // (b) a releaser already granted it
+    return isCompatible(resourceId, lockTable[resourceId][index]);   // (c) grantable now
+};
+cv.wait(lock, canProceed);
+long index = pendingRequestIndexInternal(txnId, resourceId);
+if (isAbortedInternal(txnId)) { erase the pending request; return false; }
+if (index &gt;= 0) { grantInternal(resourceId, index); return true; }   // (c): grant it myself
+return holdsSufficientInternal(txnId, resourceId, lockType);          // (b): confirm and report true</code></pre>
+      <p>A waiter sleeps on the shared <code>cv</code> and re-checks its predicate every time it's woken, whether by a real change or a spurious wakeup (page 2, section 5). The predicate is true in three cases: (a) the transaction was aborted, (b) some releasing thread already granted the request, so it's no longer pending, or (c) the request has become grantable. Case (b) happens often, because releases hand locks to waiters directly (section 5).</p>
+      <div class="worked">
+        <span class="box-label">Worked example · tests/test_correctness.cpp:47-62</span>
+        <p>T201 takes X on R7. T202 asks for S on R7, which is incompatible, so it queues and sleeps. T201 releases. <code>releaseLock</code> calls <code>grantWaitersInternal</code>, which sets T202's request to <code>granted</code>, then calls <code>notify_all</code>. T202 wakes: it isn't aborted, it has no pending request, so the predicate is true through (b). After the wait, <code>index &lt; 0</code>, so it returns <code>holdsSufficientInternal(202, 7, SHARED)</code>, which is <code>true</code>. Both checks in that test passed in the <code>make test</code> run recorded on 2026-09-11.</p>
       </div>
-      <div class="callout result">
-        <span class="box-label">Result · tests/test4.txt, reordered build</span>
-        <p>The transaction that was <em>not</em> aborted: <strong>Restarts 0 · Locks Acq 1 · Locks Fail 1 · Committed</strong>. It took its first X lock immediately, waited for its second, was pre-granted when the victim's locks were released, got <code>false</code>, and committed anyway. <code>tests/test6.txt</code> (no conflicts, so no waits) shows <strong>0</strong> failures. On <code>dead_test.txt</code>, run 1 recorded 6,911 lock failures against 6,701 restarts.</p>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · a granted wait reported as failure</span>
+        <p><strong>Before:</strong> after waking, the code searched only for an <em>ungranted</em> request. In case (b) it found none and fell through to <code>return false</code>. The lock was held in the table, but the caller was told it wasn't, so <code>locksHeld</code> missed the resource and the harness counted a "lock failure". On <code>dead_test.txt</code>, one pre-fix run recorded 6,911 lock failures against 6,701 restarts. Isolation wasn't affected, because other transactions check the table, which was correct. <strong>After:</strong> case (b) confirms the grant and returns <code>true</code>.</p>
       </div>
-      <p><strong>What this supports.</strong> The "Locks Fail" column in <code>transaction_metrics.txt</code> mixes real failures (aborted while waiting) with successful waits, so it can't be read as a failure rate. <strong>What it doesn't.</strong> It isn't evidence of an isolation bug. That's section 6.</p>
     </section>
 
     <section>
-      <h2 id="s5">5. Releasing: pre-grant, then wake everyone</h2>
-<pre><code>// src/lock_manager.cpp:405-428 (releaseLock) — releaseAllLocks does the same per resource
-requests.erase(it);
-rag.removeAssignmentEdge(resourceId, txnId);
-for (auto&amp; req : requests)
-    if (!req.granted &amp;&amp; isCompatible(resourceId, req)) req.granted = true;   // vector order
-notifyWaitingTransactions();                                              // cv.notify_all()</code></pre>
-      <p><code>releaseAllLocks</code>, called on every commit and abort, first strips the transaction's own <em>waiting</em> requests from every queue (the "CRITICAL FIX" comment at line 437, needed when a victim is aborted mid-wait). It then releases each granted lock the same way.</p>
+      <h2 id="s5">5. Releasing: grant waiters, then wake everyone</h2>
+<pre><code>// src/lock_manager.cpp:96-124 (grantWaitersInternal, abridged)
+bool granted = true;
+while (granted) {
+    granted = false;
+    // pass 1: pending upgrades (the requester already holds S here)
+    for (i in requests) if (isUpgrade(i) &amp;&amp; isCompatible(i)) { grantInternal(i); granted = true; break; }
+    // pass 2: any pending request, in vector (arrival) order
+    for (i in requests) if (!granted &amp;&amp; !requests[i].granted &amp;&amp; isCompatible(i)) { grantInternal(i); granted = true; break; }
+}
+
+// src/lock_manager.cpp:412-430 (releaseLock, abridged)
+requests.erase(it);  rag.removeAssignmentEdge(resourceId, txnId);
+if (requests.empty()) lockTable.erase(resourceId); else grantWaitersInternal(resourceId);
+notifyWaitingTransactions();   // cv.notify_all()</code></pre>
+      <p>Each release hands the resource to every waiter that has become compatible, one grant at a time, re-scanning after each grant. Pending upgrades go first, because their holder already has S on the item: granting a fresh request ahead of an upgrade could let a new writer in between the upgrader's read and its write. Every grant goes through <code>grantInternal</code> (lines 73–94), which also updates the RAG, so the graph stays in step with the table. <code>releaseAllLocks</code> (lines 435–491), called on every commit and abort, removes both the transaction's granted locks and its pending requests from every queue, then does the same per touched resource. It always notifies, because the transaction being aborted may itself be asleep and must wake up to see that.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · a writer can still be skipped</span>
+        <p>R has granted S for T1 and T4, and pending requests [T2 wants X, T3 wants S], in that order. T4 releases. Pass 1 finds no upgrade. Pass 2 tries T2's X, which still conflicts with T1's S, so it's skipped. T3's S is compatible, so it's granted. T2 now waits for both T1 and T3. If readers keep overlapping, T2 never runs. Arrival order is respected only among requests that are compatible at the moment of the scan.</p>
+      </div>
       <div class="callout impl">
         <span class="box-label">In the code · one condition variable for the whole table</span>
-        <p>Every release wakes every waiting thread in the process, including threads waiting on unrelated resources, and each re-checks its predicate under the one <code>mtx</code>. That's the \(R \times W\) herd from page 2, section 6. <code>dead_test.txt</code> run 1 logged \(R = 16{,}402\) lock releases. If, hypothetically, 100 threads were waiting on average, that would be about \(16{,}402 \times 100 \approx 1.64\) million wakeups. The audit didn't measure \(W\). The pre-grant path also sets <code>granted</code> without adding the RAG assignment edge, so the RAG drifts out of step with the table.</p>
+        <p>Every release wakes every waiting thread in the process, including threads waiting on unrelated resources. Each one then re-acquires the one <code>mtx</code> just to re-check its predicate. That's the \(R \times W\) herd from page 2, section 6. As a hypothetical: 10,000 releases with 100 threads waiting at each would be \(10{,}000 \times 100 = 1{,}000{,}000\) wakeups, nearly all of which go straight back to sleep. No run counted wakeups. The standard fix is one condition variable (or wait queue) per resource, or per waiting request.</p>
+      </div>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · RAG drift</span>
+        <p><strong>Before:</strong> releases set <code>req.granted = true</code> directly, without adding the RAG assignment edge, so the resource allocation graph drifted out of step with the lock table. <strong>After:</strong> every grant goes through <code>grantInternal</code>.</p>
       </div>
     </section>
 
     <section>
-      <h2 id="s6">6. The upgrade gap breaks serializability</h2>
-<pre><code>// src/lock_manager.cpp:252-283 (upgradeLockInternal, abridged)
+      <h2 id="s6">6. Upgrades keep the S lock</h2>
+<pre><code>// src/lock_manager.cpp:209-261 (upgradeLockInternal, abridged)
 bool canUpgrade = all_of(requests, [txnId](auto&amp; r){ return !r.granted || r.transactionId == txnId; });
-if (canUpgrade)      { it-&gt;type = LockType::EXCLUSIVE; return true; }   // in place: fine
-else if (!wait)      { return false; }
-else {
-    requests.erase(it);                                  // give up the granted SHARED lock
-    requests.push_back(LockRequest(txnId, LockType::EXCLUSIVE));   // queue as a fresh X request
-    return false;                                        // caller now waits via waitForLock
-}</code></pre>
-      <p>While the upgrade waits, the transaction holds nothing on the item. Any other transaction can be granted X on it, write, commit and release. The upgrader then gets X and writes based on its earlier, now stale read. By page 3, section 6 that's a release before an acquisition, so the lock-point proof no longer applies.</p>
-      <h3>Did it happen? Log replay</h3>
-      <p>Every grant, upgrade and release is logged while <code>mtx</code> is held, so the order of lines in <code>deadlock_test.log</code> is the true order of lock-table changes. The audit replayed each log with two checks: (i) were incompatible locks ever held together, and (ii) for each "waiting to upgrade" event, was another transaction granted X on that resource before the upgrader got its X, followed by the upgrader committing?</p>
+if (canUpgrade) { it-&gt;type = LockType::EXCLUSIVE; return GRANTED; }   // sole holder: convert in place
+if (!wait)      { return DENIED; }
+// Queue an EXCLUSIVE request but KEEP the granted SHARED lock.
+if (pendingRequestIndexInternal(txnId, resourceId) &lt; 0) {
+    requests.push_back(LockRequest(txnId, LockType::EXCLUSIVE));
+    rag.addRequestEdge(txnId, resourceId);
+}
+return QUEUED;                                   // caller unlocks and calls waitForLock</code></pre>
+      <p>While an upgrade waits, the transaction holds two entries on the item: its granted S and a pending X. Its S still conflicts with every other X request, so nobody can write the item in the gap. When the other readers leave, pass 1 of section 5 grants the X, and <code>grantInternal</code> erases the now-redundant S entry.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · tests/test_correctness.cpp:23-44</span>
+        <p>T101 and T102 both hold S on R1. T101 asks for X: T102 still holds S, so the X is queued and T101 keeps its S. Check: <code>holdsLock(101, 1)</code> is <code>true</code>. T102 releases, and pass 1 grants T101's X. T103 then asks for X without waiting, and is refused. Check: no other transaction got X in the upgrade window. T101's call returns <code>true</code>, and it ends up with a single X entry. All four checks passed in the same recorded run.</p>
+      </div>
+      <p><strong>A consequence: upgrade deadlocks.</strong> If T1 and T2 both hold S(F) and both ask for X(F), each pending X waits for the other's S. That's a cycle in the wait-for graph (page 3, section 3). The detector aborts one of them, and its <code>releaseAllLocks</code> removes both its S and its pending X, after which the survivor's upgrade is granted. <code>tests/test1.txt</code> is built around exactly this pattern.</p>
+
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · the upgrade gap</span>
+<pre><code>// before (upgradeLockInternal, wait == true)
+requests.erase(it);                                              // give up the granted SHARED lock
+requests.push_back(LockRequest(txnId, LockType::EXCLUSIVE));     // queue as a fresh X request
+return false;                                                    // caller waits via waitForLock</code></pre>
+        <p>While the upgrade waited, the transaction held <em>nothing</em> on the item. Any other transaction could be granted X, write, commit and release. The upgrader then got X and wrote based on its earlier, now stale read. By page 3, section 6 that's a release followed by an acquisition, so the lock-point proof no longer applied.</p>
+      </div>
+      <h3>How the old bug showed up: log replay of pre-fix runs</h3>
+      <p>Every grant, upgrade and release is logged while <code>mtx</code> is held, so the order of lines in the engine log is the true order of lock-table changes. The audit replayed each pre-fix log with two checks: (i) were incompatible locks ever held at the same time, and (ii) for each "waiting to upgrade" event, was another transaction granted X on that resource before the upgrader got its X, with the upgrader then committing?</p>
       <div class="tbl-wrap">
       <table>
-        <caption>Log replay, reordered build</caption>
+        <caption>Log replay, pre-fix engine (declaration order already fixed, -O0)</caption>
         <thead><tr><th>Run</th><th class="num">Incompatible grants co-held</th><th class="num">Upgrade waits</th><th class="num">…ended by abort</th><th class="num">…finished with X</th><th class="num">X granted to another txn in the gap, then upgrader committed</th></tr></thead>
         <tbody>
           <tr><td><code>test.txt</code> run 1</td><td class="num">0</td><td class="num">106</td><td class="num">101</td><td class="num">5</td><td class="num">4</td></tr>
           <tr><td><code>test.txt</code> run 2</td><td class="num">0</td><td class="num">109</td><td class="num">101</td><td class="num">8</td><td class="num">4</td></tr>
           <tr><td><code>dead_test.txt</code> runs 1–2</td><td class="num">0</td><td class="num">0</td><td class="num">–</td><td class="num">–</td><td class="num">–</td></tr>
-          <tr><td><code>test1/4/5.txt</code></td><td class="num">0</td><td class="num">2 / 0 / 0</td><td class="num">1 / – / –</td><td class="num">1 / – / –</td><td class="num">0</td></tr>
         </tbody>
       </table>
       </div>
       <div class="worked">
-        <span class="box-label">Worked example · one case traced by hand (test.txt run 1)</span>
+        <span class="box-label">Worked example · one case traced by hand (pre-fix test.txt run 1)</span>
         <p>File transaction T314 is <code>R(E) R(Z) R(N) W(N)</code>. It ran as ID 985, and resource R7 is item N. T525 is <code>R(J) R(Z) W(N)</code> (ID 957). T916 is <code>R(Q) R(C) W(S) W(N)</code> (ID 958).</p>
 <pre><code>47266  T985 acquired SHARED lock on R7          r314(N)
 47269  T985 waiting to upgrade lock on R7       (S on N dropped)
@@ -160,7 +188,7 @@ else {
 47386  Transaction T958 committed successfully  c916
 47392  T985 acquired EXCLUSIVE lock on R7       w314(N)
 47440  Transaction T985 committed successfully  c314</code></pre>
-        <p>Conflicts on N: \(r_{314} \lt w_{525}\) gives \(T_{314} \to T_{525}\), and \(w_{525} \lt w_{314}\) gives \(T_{525} \to T_{314}\). That's a cycle, so the schedule isn't conflict-serializable (page 1, section 7). It's the lost-update shape S₂, and \(T_{916}\) forms a second cycle with \(T_{314}\) the same way. Line numbers are from the audit's log file, and they differ between runs.</p>
+        <p>Conflicts on N: \(r_{314} \lt w_{525}\) gives \(T_{314} \to T_{525}\), and \(w_{525} \lt w_{314}\) gives \(T_{525} \to T_{314}\). That's a cycle, so the schedule isn't conflict-serializable (page 1, section 7). It's the lost-update shape S₂, and \(T_{916}\) forms a second cycle with \(T_{314}\) the same way.</p>
       </div>
       <div class="figure">
         <svg viewBox="0 0 560 170" width="560" height="170" role="img" aria-label="Precedence graph: T314 and T525 have edges both ways; T314 and T916 have edges both ways; T525 points to T916.">
@@ -182,18 +210,31 @@ else {
           <polygon points="421,140 411,135 411,145" fill="var(--ink-soft)"/>
           <text x="280" y="160" font-size="10.5" fill="var(--ink-soft)" text-anchor="middle">w525(N) &lt; w916(N)</text>
         </svg>
-        <figcaption>Precedence graph for item N in the traced case. Both red pairs are cycles.</figcaption>
+        <figcaption>Precedence graph for item N in the traced pre-fix case. Both red pairs are cycles.</figcaption>
       </div>
-      <p><strong>What this supports.</strong> The lock table never granted incompatible locks (check i passed in every log), but the upgrade path let committed transactions form non-serializable schedules: 4 upgraders per <code>test.txt</code> run, out of 1,000 committed transactions (0.4%). The claim "guarantees serializability" is contradicted by the project's own workload. <strong>What it doesn't.</strong> <code>dead_test.txt</code> never touches the same item twice in one transaction, so it has no upgrades and no such cases. The project stores no values, so no wrong number was ever computed. The evidence is the schedule order. The counts are from two runs, and they depend on timing.</p>
-      <div class="callout impl">
-        <span class="box-label">In the code · the fix</span>
-        <p>Keep the S entry granted. Record a pending-upgrade flag, or queue an X request with the S still held. Grant the X once every other granted lock is gone, preferring upgrade requests over new ones. Two concurrent upgraders then deadlock (page 3, section 3), which the detector already handles.</p>
+      <p><strong>What this supports.</strong> Before the fix, the lock table never granted incompatible locks (check i passed in every log), but the upgrade path let committed transactions form non-serializable schedules: 4 upgraders per <code>test.txt</code> run, out of 1,000 committed transactions (0.4%). After the fix, the regression test above passes, and the benchmark's precedence-graph check passes in every run at up to 64 threads (<a href="09-results-and-takeaways.html#s5">results, section 5</a>). <strong>What it doesn't.</strong> The pre-fix counts come from two timing-dependent runs. The project stored no values then, so the evidence is the schedule order, not a wrong number. And the fix doesn't make the engine serializable at every scale: a separate race remains at 1,000 threads (<a href="07-part-deadlock-detector.html#s6">Part 3, section 6</a>).</p>
+    </section>
+
+    <section>
+      <h2 id="s7">7. getWaitForEdges: one snapshot for the detector</h2>
+<pre><code>// src/lock_manager.cpp:513-531 (abridged)
+std::lock_guard&lt;std::mutex&gt; lock(mtx);                 // one acquisition for the whole table
+for (auto&amp; [resource, requests] : lockTable)
+    for (auto&amp; waiter : requests) if (!waiter.granted)
+        for (auto&amp; holder : requests)
+            if (holder.granted &amp;&amp; holder.transactionId != waiter.transactionId
+                &amp;&amp; !(waiter.type == SHARED &amp;&amp; holder.type == SHARED))
+                edges.emplace_back(waiter.transactionId, holder.transactionId);   // waiter -&gt; holder</code></pre>
+      <p>An edge means "this waiter is blocked by this holder". A waiting S is blocked only by granted X locks. A waiting X is blocked by every other granted lock. That's page 4, section 4's rule, and it matches <code>isCompatible</code>. Because the whole scan happens under one acquisition of <code>mtx</code>, the edges describe a single instant.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · three resources</span>
+        <p><strong>R1:</strong> T1 granted S, T2 granted S, T3 waiting X → edges T3→T1 and T3→T2. <strong>R2:</strong> T4 granted X, T5 waiting S → edge T5→T4. <strong>R3:</strong> T1 granted S, T2 granted S, T1 waiting X (an upgrade) → edge T1→T2 only, because T1 doesn't wait for itself. The snapshot is {T3→T1, T3→T2, T5→T4, T1→T2}. It has no cycle, so there's no deadlock yet. If T2 now asks for X on R1, the edge T2→T1 is added, and T1→T2→T1 is a deadlock.</p>
       </div>
     </section>
 
     <section>
-      <h2 id="s7">7. The RAG, and a file write inside the critical path</h2>
-      <p><code>LockManager</code> keeps a <code>ResourceAllocationGraph</code> in step with the table by calling <code>rag.addAssignmentEdge</code>, <code>addRequestEdge</code>, <code>removeAssignmentEdge</code> and <code>clearTransaction</code> while holding <code>mtx</code>. The harness calls <code>cm.logResourceAllocationGraph(...)</code> after every operation of every transaction, which runs:</p>
+      <h2 id="s8">8. The RAG, and a file write inside the critical path</h2>
+      <p><code>LockManager</code> keeps a <code>ResourceAllocationGraph</code> in step with the table by calling <code>rag.addAssignmentEdge</code>, <code>addRequestEdge</code>, <code>removeAssignmentEdge</code> and <code>clearTransaction</code> while holding <code>mtx</code>. The text harness calls <code>cm.logResourceAllocationGraph(...)</code> after every operation of every transaction, and that runs:</p>
 <pre><code>// src/resource_manager.cpp:211-231
 void ResourceAllocationGraph::logToFile(const std::string&amp; info) const {
     std::lock_guard&lt;std::recursive_mutex&gt; lock(mtx);                 // RAG latch held...
@@ -201,24 +242,24 @@ void ResourceAllocationGraph::logToFile(const std::string&amp; info) const {
     ... ragLogFile &lt;&lt; toString();  ragLogFile.flush();                // whole-graph write, flush
 }</code></pre>
       <div class="callout impl">
-        <span class="box-label">In the code · lock-table operations queue behind disk I/O</span>
-        <p>A thread inside <code>LockManager</code> holds <code>mtx</code> and needs the RAG latch. A harness thread holds the RAG latch while opening the log file and writing out the entire graph. So every lock-table operation can end up waiting on a file write. One <code>test.txt</code> run produced a <code>rag_log.txt</code> of <strong>108,518,195 bytes</strong>. <code>Logger</code> also flushes every line under its own mutex. These are likely throughput costs, but the audit didn't measure them one at a time (see the results page).</p>
+        <span class="box-label">In the code · lock-table operations can queue behind disk I/O (text harness)</span>
+        <p>A thread inside <code>LockManager</code> holds <code>mtx</code> and needs the RAG latch. A harness thread may be holding that RAG latch while it opens the log file and writes out the whole graph. So in the text harness, every lock-table operation can end up waiting on a file write. One pre-fix <code>test.txt</code> run produced a <code>rag_log.txt</code> of <strong>108,518,195 bytes</strong>. The benchmark never calls <code>logResourceAllocationGraph</code>, and it runs the logger at WARNING, so its numbers don't include this cost. Two smaller costs remain even there: <code>LockManager</code> builds its INFO message strings under <code>mtx</code> before the logger discards them, and <code>Logger::log</code> flushes every line it does write while holding its own mutex (<code>src/logger.cpp:48-58</code>).</p>
       </div>
     </section>
 
     <section>
-      <h2 id="s8">8. From timeouts to detection: what the history shows</h2>
+      <h2 id="s9">9. What the history shows</h2>
       <div class="callout fix">
         <span class="box-label">git · commit 15e65d5 "victim selection and performance metrics done" (2025-04-12)</span>
-        <p><strong>Before:</strong> <code>bool success = cv.wait_for(lock, lockTimeout, canAcquireLock);</code>, and on timeout it logged "timed out waiting for lock" and gave up, which was the README's "5-second timeout prevents indefinite waiting". <strong>After:</strong> <code>cv.wait(lock, canAcquireLock);</code> with no timeout, followed by an abort check ("aborted while waiting for lock"), because deadlocks are now broken by the detector's victim abort. The <code>lockTimeout</code> constant and the README text were left behind, which is why they no longer describe the code.</p>
+        <p><strong>Before:</strong> <code>bool success = cv.wait_for(lock, lockTimeout, canAcquireLock);</code>. On timeout it logged "timed out waiting for lock" and gave up, which is the README's "5-second timeout prevents indefinite waiting". <strong>After:</strong> <code>cv.wait(lock, canAcquireLock);</code> with no timeout, followed by an abort check, because deadlocks are broken by the detector's victim abort instead. Commit 47e3a19 later removed the unused <code>lockTimeout</code> constant. The README text still describes the timeout.</p>
       </div>
       <div class="callout fix">
-        <span class="box-label">git · commit 0b53d06 "Bug fixed" (2025-04-11)</span>
-        <p>The RAG's shared <code>static std::ofstream ragLogFile</code> (opened with truncation) was removed. Each <code>logToFile</code> call now opens <code>rag_log.txt</code> in append mode, and <code>initLogFile</code> became a normal member function. The commit doesn't say which bug it fixed. A side effect: <code>src/2pl_test_runner.cpp</code> still calls <code>ResourceAllocationGraph::initLogFile(...)</code> as if it were static, which is one of the two reasons that runner no longer compiles.</p>
+        <span class="box-label">git · commit 0b53d06 "Bug fixed" (2025-04-11), and 47e3a19</span>
+        <p>0b53d06 removed the RAG's shared <code>static std::ofstream</code>. Each <code>logToFile</code> call now opens <code>rag_log.txt</code> in append mode, and <code>initLogFile</code> became a normal member function. <code>src/2pl_test_runner.cpp</code> kept calling it as if it were static, and also called a <code>checkForDeadlocks()</code> that was never defined, so that runner didn't compile. 47e3a19 fixed both: the runner now relies on the RAG's constructor, and <code>checkForDeadlocks()</code> runs one detection pass. A <code>2pl_test_runner</code> binary built on 2026-09-11 sits in the repo root.</p>
       </div>
     </section>
 
-    <div class="recap"><span class="box-label">Carried forward</span>one global latch and one condition variable (§1) · compatibility ignores the queue: barging, and no priority in grants (§2) · the acquire decision tree (§3) · pre-granted waits return <code>false</code>, so "Locks Fail" is inflated but isolation is unaffected (§4) · release pre-grants plus a process-wide <code>notify_all</code>, and RAG drift (§5) · the upgrade gap and the log-replay evidence: 0 incompatible grants, 4 non-serializable committed upgraders per <code>test.txt</code> run (§6) · RAG file I/O inside the critical path (§7) · the timeout → detection history (§8).</div>
+    <div class="recap"><span class="box-label">Carried forward</span>one global latch and one condition variable (§1) · compatibility ignores the queue: barging, and no priority in grants (§2) · the acquire decision tree, with the aborted check under the latch (§3) · three wake reasons, and granted waits now reported as <code>true</code> (§4) · releases grant upgrades first, then arrival order among compatible requests; a writer can still be skipped; process-wide <code>notify_all</code> (§5) · upgrades keep S; the pre-fix gap and its log-replay evidence (4 non-serializable upgraders per <code>test.txt</code> run); upgrade deadlocks (§6) · <code>getWaitForEdges</code>, a single-instant snapshot (§7) · RAG file I/O inside the critical path in the text harness (§8) · the timeout → detection history (§9).</div>
   </main>
   <div class="pager">
     <a href="05-part-transaction-and-manager.html"><span class="lbl">Back</span>← Part 1 · Transaction and ConcurrencyManager</a>

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Part 4: Harness, workloads and metrics · Concurrency Manager</title>
+<title>Part 4: Harnesses, workloads and metrics · Concurrency Manager</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
@@ -15,34 +15,54 @@
 <div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
 <div class="page">
   <header class="masthead">
-    <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Part 4 · Harness and metrics</span></div>
+    <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Part 4 · Harnesses and metrics</span></div>
     <span class="stage-tag">Part 4</span>
-    <h1 class="title">The harness: workloads, restarts and what the metrics measure</h1>
-    <p class="dek">The program that turns a text schedule into 1,000 threads, restarts deadlock victims with growing backoff, and writes <code>transaction_metrics.txt</code>. Every metric is defined here exactly as the code computes it, since the CV's numbers would have to come from this file.</p>
+    <h1 class="title">The harnesses: workloads, restarts and what the metrics measure</h1>
+    <p class="dek">Two programs drive the engine. The original text-schedule harness starts 1,000 threads at once. The benchmark added in commit 47e3a19 runs the same workload serially and with a pool of threads, then checks every run for serializability and lost updates. Every metric and check is defined here exactly as the code computes it.</p>
   </header>
   <main>
 
-    <div class="recap"><span class="box-label">Uses</span>threads, barriers and data races from <a href="02-threads-mutexes-condvars.html#s1">page 2, sections 1</a>, <a href="02-threads-mutexes-condvars.html#s2">2</a>, <a href="02-threads-mutexes-condvars.html#s8">8</a> · upgrades from <a href="03-locks-and-2pl.html#s3">page 3, section 3</a> · aging and backoff with jitter from <a href="04-deadlocks-and-wait-for-graphs.html#s8">page 4, sections 8–9</a> · throughput and thrashing from <a href="04-deadlocks-and-wait-for-graphs.html#s10">page 4, section 10</a> · restart under the same ID from <a href="05-part-transaction-and-manager.html#s4">Part 1, section 4</a> · inflated lock failures from <a href="06-part-lock-manager.html#s4">Part 2, section 4</a> · victim abort from <a href="07-part-deadlock-detector.html#s5">Part 3, section 5</a>.</div>
+    <div class="recap"><span class="box-label">Uses</span>anomalies and the lost update from <a href="01-transactions-and-serializability.html#s4">page 1, section 4</a> · conflicts and the precedence-graph test from <a href="01-transactions-and-serializability.html#s5">page 1, sections 5</a>–<a href="01-transactions-and-serializability.html#s7">7</a> · threads, data races and barriers from <a href="02-threads-mutexes-condvars.html#s1">page 2, sections 1</a>, <a href="02-threads-mutexes-condvars.html#s2">2</a> and <a href="02-threads-mutexes-condvars.html#s8">8</a> · upgrades from <a href="03-locks-and-2pl.html#s3">page 3, section 3</a> · aging and backoff with jitter from <a href="04-deadlocks-and-wait-for-graphs.html#s8">page 4, sections 8–9</a> · thrashing from <a href="04-deadlocks-and-wait-for-graphs.html#s10">page 4, section 10</a> · restart under the same ID and the commit hook from <a href="05-part-transaction-and-manager.html#s4">Part 1, sections 4</a> and <a href="05-part-transaction-and-manager.html#s6">6</a> · granted waits from <a href="06-part-lock-manager.html#s4">Part 2, section 4</a> · victim aborts and the late-release race from <a href="07-part-deadlock-detector.html#s5">Part 3, sections 5–6</a>.</div>
 
     <section>
       <div class="spec-quote">
-        <span class="box-label">docs/17-test-harnesses.md · and docs/16-test-file-language.md</span>
-        <blockquote>"tests/test_deadlock_detection.cpp — the actual, working, feature-complete harness. This is the most sophisticated program in the repository, and it's the one the makefile's run target actually builds and runs (against tests/test4.txt)." · "tests/generate_diff.py […] deliberately creates small batches of transactions that each touch the same 3 items, but in alternating order […] a textbook way to manufacture circular wait conditions on purpose."</blockquote>
+        <span class="box-label">docs/17-test-harnesses.md · and the header comment of tests/benchmark.cpp</span>
+        <blockquote>"tests/test_deadlock_detection.cpp — the actual, working, feature-complete harness." · "A fixed set of N generated transactions is executed by a pool of T worker threads (T = 1 is the serial baseline, run by the same binary on the same workload). […] After each run two checks are applied to what actually committed: 1. Conflict-serializability […] 2. No lost updates."</blockquote>
       </div>
-      <p>"Feature-complete" covers the restart loop (section 4) and the metrics report (section 5). "Circular wait conditions on purpose" is the Coffman condition from page 4, section 1. Section 2 checks how the generated file actually behaves.</p>
+      <p>The docs predate the benchmark. "Feature-complete" covers the text harness's restart loop and metrics report (sections 2–5). "Serial baseline, run by the same binary" is what makes a speedup comparison fair (section 6). "Conflict-serializability" is page 1, section 7 turned into code (section 7).</p>
     </section>
 
     <section>
-      <h2 id="s1">1. The schedule language, and how it's grouped</h2>
-      <p>Lines are <code>START T&lt;n&gt;</code>, <code>R&lt;n&gt;(item)</code>, <code>W&lt;n&gt;(item)</code>, <code>C&lt;n&gt;</code>, <code>A&lt;n&gt;</code> and <code>RELEASE T&lt;n&gt;(item)</code>, with <code>//</code> comments. <code>parseTestFile</code> collects every line into a per-transaction list keyed by <code>n</code>. The file's global line order is thrown away, and each list runs on its own thread from top to bottom. Item names map to resource IDs 1, 2, 3, … in the order threads first touch them (<code>getResourceId</code>).</p>
-      <div class="callout impl">
-        <span class="box-label">In the code · the item map is itself a data race</span>
-        <p><code>dataItemToResourceId</code> is a global <code>std::map</code> and <code>cnt</code> a global <code>int</code>. Worker threads call <code>getResourceId</code>, which inserts into both with no mutex, right after the barrier releases all 1,000 threads at once. That's page 2, section 2's undefined behaviour in the harness itself. A corrupted map could give one item two IDs, which would silently remove the conflict between its readers and writers.</p>
+      <h2 id="s1">1. Two drivers, side by side</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th></th><th><code>tests/test_deadlock_detection.cpp</code></th><th><code>tests/benchmark.cpp</code></th></tr></thead>
+        <tbody>
+          <tr><td>Workload</td><td>text schedule file (<code>test.txt</code>, <code>dead_test.txt</code>, …)</td><td>generated: N txns × ops, random items, seed 42</td></tr>
+          <tr><td>Threads</td><td>one per transaction, all released together</td><td>a pool of T workers pulling the next transaction</td></tr>
+          <tr><td>Serial baseline</td><td>none built in</td><td>T = 1, same binary and workload</td></tr>
+          <tr><td>Work per operation</td><td>none: lock calls only</td><td>optional sleep while holding the lock (<code>--work-us</code>)</td></tr>
+          <tr><td>Data</td><td>none</td><td>one integer per item; writes buffered until commit</td></tr>
+          <tr><td>Detection interval</td><td>100 ms</td><td>10 ms</td></tr>
+          <tr><td>Logging</td><td>engine at INFO, plus the whole RAG written to a file after every operation</td><td>engine at WARNING, no RAG file writes</td></tr>
+          <tr><td>Output</td><td><code>transaction_metrics.txt</code></td><td>median throughput, speedup, aborts, check results, CSV</td></tr>
+          <tr><td>Correctness checks</td><td>none</td><td>precedence graph + lost updates, every run</td></tr>
+        </tbody>
+      </table>
       </div>
     </section>
 
     <section>
-      <h2 id="s2">2. The workloads</h2>
+      <h2 id="s2">2. The text schedule language, and how it's grouped</h2>
+      <p>Lines are <code>START T&lt;n&gt;</code>, <code>R&lt;n&gt;(item)</code>, <code>W&lt;n&gt;(item)</code>, <code>C&lt;n&gt;</code>, <code>A&lt;n&gt;</code> and <code>RELEASE T&lt;n&gt;(item)</code>, with <code>//</code> comments. <code>parseTestFile</code> collects every line into a list per transaction, keyed by <code>n</code>. The file's global line order is thrown away, and each list runs on its own thread from top to bottom. So the file doesn't dictate an interleaving: the OS scheduler and the lock manager decide it. Item names map to resource IDs 1, 2, 3, … in the order threads first touch them (<code>getResourceId</code>).</p>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · the item map was a data race</span>
+        <p><strong>Before:</strong> <code>dataItemToResourceId</code> (a global <code>std::map</code>) and the counter <code>cnt</code> were updated by up to 1,000 threads with no mutex, right after the barrier released them all at once. That's undefined behaviour, and a corrupted map could have given one item two IDs, silently removing the conflict between its readers and writers. <strong>After:</strong> <code>getResourceId</code> holds <code>resourceIdMutex</code> (<code>tests/test_deadlock_detection.cpp:19-21, 56</code>).</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s3">3. The text workloads</h2>
       <div class="tbl-wrap">
       <table>
         <caption>Computed from the files by the audit</caption>
@@ -54,46 +74,38 @@
         </tbody>
       </table>
       </div>
-      <p>\(684 / 3{,}515 = 0.1946\), so 19.5% of operations are writes. The generator's <code>read_ratio=0.8</code> comment says "70% reads", but the argument is 0.8, and the file matches 0.8.</p>
+      <p>\(684 / 3{,}515 = 0.1946\), so 19.5% of operations are writes. The generator's comment says "70% reads", but it's called with <code>read_ratio=0.8</code>, and the file matches 0.8.</p>
       <div class="worked">
         <span class="box-label">Worked example · why dead_test.txt deadlocks every batch</span>
-        <p><code>generate_diff.py</code> picks 3 items per batch of 10 and sets <code>ops_per_transaction=4</code>, so the first 2 items are read and the rest (just 1) written. That's R, R, W, not the two reads plus two writes the name suggests. Batch 1:</p>
+        <p><code>generate_diff.py</code> picks 3 items per batch of 10 transactions and reads the first 2 and writes the last 1, so each transaction is R, R, W. Batch 1:</p>
         <p class="sched">T1, T3, T5, T7, T9: R(K) R(B) W(J) &nbsp;&nbsp; T2, T4, T6, T8, T10: R(J) R(B) W(K)</p>
-        <p>Every odd transaction holds \(S(K)\) and needs \(X(J)\). Every even one holds \(S(J)\) and needs \(X(K)\). Once all ten hold their first S lock, each odd transaction waits on all five evens and vice versa: a complete bipartite wait graph with \(5 \times 5 \times 2 = 50\) edges, full of cycles. All 100 batches follow this pattern (checked by script), and they share a pool of only 12 items, so batches collide with each other too.</p>
+        <p>Every odd transaction holds \(S(K)\) and needs \(X(J)\). Every even one holds \(S(J)\) and needs \(X(K)\). Once all ten hold their first S lock, each odd transaction waits on all five evens and vice versa. That's a complete bipartite wait graph with \(5 \times 5 \times 2 = 50\) edges, full of cycles. All 100 batches follow this pattern, and they share a pool of only 12 items, so batches collide with each other too.</p>
       </div>
     </section>
 
     <section>
-      <h2 id="s3">3. One thread per transaction, released together</h2>
-<pre><code>// tests/test_deadlock_detection.cpp:571-592
+      <h2 id="s4">4. Text harness: 1,000 threads at once, and restart with backoff</h2>
+<pre><code>// tests/test_deadlock_detection.cpp:582-606 (abridged)
 startBarrier = std::make_shared&lt;std::barrier&lt;&gt;&gt;(numTransactions);
-for (const auto &amp;ops : transactionOperations)
-    threads.emplace_back(runTransaction, txnNum, ops, 1);   // priority starts at 1
-for (auto &amp;t : threads) t.join();
-std::this_thread::sleep_for(std::chrono::milliseconds(100 * 2));
-writeTransactionMetricsToFile(testFile, testStartTime);</code></pre>
-      <p>Each thread calls <code>startBarrier-&gt;arrive_and_wait()</code> first, so on the 1,000-transaction files 1,000 threads start their first operation together. That's the "1,000 threads" in the project's story, plus the detector and main threads. It maximizes contention on purpose, on an 8-core machine (page 2, section 1).</p>
-    </section>
-
-    <section>
-      <h2 id="s4">4. Restart with aging and backoff</h2>
-      <p>After every read or write, the thread checks whether its transaction was aborted. If so, it records a restart, raises its priority, sleeps, and restarts from <code>START</code> under the same ID (Part 3, section 6 shows the code):</p>
-<pre><code>// tests/test_deadlock_detection.cpp:306-322
+for (const auto&amp; ops : transactionOperations) threads.emplace_back(runTransaction, txnNum, ops, 1);
+for (auto&amp; t : threads) t.join();
+std::this_thread::sleep_for(std::chrono::milliseconds(100 * 2));   // then write metrics</code></pre>
+      <p>Each thread calls <code>startBarrier-&gt;arrive_and_wait()</code> first, so on the 1,000-transaction files 1,000 worker threads start their first operation together, alongside the main thread and the detector thread. That maximizes contention on purpose, on an 8-core machine. After every read or write, the thread checks whether its transaction was aborted. If so, it records a restart, raises its priority, sleeps, and restarts from <code>START</code> under the same ID.</p>
+<pre><code>// tests/test_deadlock_detection.cpp:308-324
 int calculateBackoff(int retryCount) {
     int baseBackoff = 20, maxBackoff = 5000;
     int backoff = std::min(baseBackoff * (1 &lt;&lt; retryCount), maxBackoff);
     int jitter = (std::rand() % 60) - 30;           // -30 .. +29
     backoff = backoff * (100 + jitter) / 100;
     return std::max(backoff, 5);
-}
-// called as calculateBackoff(priority) right after priority++</code></pre>
+}   // called as calculateBackoff(priority) right after priority++</code></pre>
       <div class="eq">
-        \[ b(p) = \Big\lfloor \min\big(20 \cdot 2^{p},\ 5000\big) \cdot \tfrac{100 + j}{100} \Big\rfloor, \qquad j \in \{-30, \ldots, 29\},\quad p = 1 + k \]
-        <p class="note">\(k\) is the restart number (1 for the first restart), so the first backoff uses \(p = 2\). The argument is named <code>retryCount</code> but receives the priority. \(j\) comes from <code>rand() % 60 - 30</code>. The floor is C++ integer division.</p>
+        \[ b(p) = \Big\lfloor \min\big(20 \cdot 2^{p},\ 5000\big) \cdot \tfrac{100 + j}{100} \Big\rfloor \text{ ms}, \qquad j \in \{-30, \ldots, 29\},\quad p = 1 + k \]
+        <p class="note">\(k\) is the restart number (1 for the first restart), so the first backoff uses \(p = 2\). The argument is named <code>retryCount</code> but receives the priority. \(j\) comes from <code>rand() % 60 - 30</code>, and the floor is C++ integer division.</p>
       </div>
       <div class="tbl-wrap">
       <table>
-        <caption>Backoff after the k-th restart</caption>
+        <caption>Text-harness backoff after the k-th restart</caption>
         <thead><tr><th class="num">k</th><th class="num">p</th><th class="num">before jitter (ms)</th><th class="num">with jitter (ms)</th></tr></thead>
         <tbody>
           <tr><td class="num">1</td><td class="num">2</td><td class="num">80</td><td class="num">56 – 103</td></tr>
@@ -107,41 +119,40 @@ int calculateBackoff(int retryCount) {
       </table>
       </div>
       <div class="worked">
-        <span class="box-label">Worked example · cost of being aborted</span>
-        <p>Low end of the \(k = 1\) row: \(80 \times 70 / 100 = 56\). High end: \(80 \times 129 / 100 = 103.2 \to 103\). Capped row: \(5000 \times 129 / 100 = 6{,}450\) ms, so the "5 second maximum" is exceeded by jitter applied after the cap (page 4, section 9).</p>
-        <p>A transaction restarted 5 times sleeps a base total of \(80 + 160 + 320 + 640 + 1280 = 2{,}480\) ms, between \(56 + 112 + 224 + 448 + 896 = 1{,}736\) and \(103 + 206 + 412 + 825 + 1{,}651 = 3{,}197\) ms with jitter. After 8 restarts the base total is \(2{,}480 + 2{,}560 + 5{,}000 + 5{,}000 = 15{,}040\) ms, and that's sleep alone, before any lock waits.</p>
+        <span class="box-label">Worked example · the cost of being aborted</span>
+        <p>Low end of the \(k = 1\) row: \(80 \times 70 / 100 = 56\). High end: \(80 \times 129 / 100 = 103.2 \to 103\). Capped row: \(5000 \times 129 / 100 = 6{,}450\) ms, so jitter applied after the cap pushes past the "5 second maximum". A transaction restarted 5 times sleeps a base total of \(80 + 160 + 320 + 640 + 1280 = 2{,}480\) ms, and that's before any time spent waiting for locks.</p>
+      </div>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · a way to exit without committing</span>
+        <p><strong>Before:</strong> the abort check ran only after a read or write. A transaction chosen as a victim after its last lock was granted reached <code>COMMIT</code>, <code>commit()</code> refused because the state was <code>ABORTED</code>, and the thread fell off the end of its operation list uncommitted. None of the 5 pre-fix 1,000-transaction runs hit it. <strong>After:</strong> a failed commit on an aborted transaction restarts it like any other victim (lines 429–437).</p>
       </div>
     </section>
 
     <section>
-      <h2 id="s5">5. The metrics, exactly as computed</h2>
+      <h2 id="s5">5. Text-harness metrics, exactly as computed</h2>
       <div class="tbl-wrap">
       <table>
         <thead><tr><th>Metric</th><th>Code</th><th>What it really counts</th></tr></thead>
         <tbody>
           <tr><td>Transactions Completed</td><td><code>completedTxnCount++</code> on a successful commit</td><td>committed transactions</td></tr>
           <tr><td>Transactions Restarted</td><td><code>restartedTxnCount++</code> per abort-and-retry</td><td>deadlock-victim aborts</td></tr>
-          <tr><td>Transaction Success Rate</td><td>\(\dfrac{100 \cdot \text{completed}}{\text{completed} + \text{restarted} + \text{aborted}}\)</td><td>commits as a share of all commit and abort events, so every restart lowers it</td></tr>
+          <tr><td>Transaction Success Rate</td><td>\(\dfrac{100 \cdot \text{completed}}{\text{completed} + \text{restarted} + \text{aborted}}\)</td><td>commits as a share of all attempts that ended, so every restart lowers it</td></tr>
           <tr><td>Throughput</td><td>committed ÷ (end − start) in seconds</td><td>the duration includes parsing and the final 200 ms sleep</td></tr>
-          <tr><td>Avg / Max Latency</td><td>first START to commit, committed rows only</td><td>includes lock waits, detection delay and all backoff sleeps</td></tr>
-          <tr><td>Locks Acq / Locks Fail</td><td>return value of <code>acquireLock</code>. Acq is reset on restart, Fail isn't</td><td>Fail includes successful waits (Part 2, section 4)</td></tr>
+          <tr><td>Avg / Max Latency</td><td>first START to commit, committed rows only</td><td>includes lock waits, detection delay and every backoff sleep</td></tr>
+          <tr><td>Locks Acq / Locks Fail</td><td>return value of <code>acquireLock</code>. Acq resets on restart, Fail doesn't</td><td>since 47e3a19, Fail counts only aborted waits (before, it also counted granted waits: Part 2, section 4)</td></tr>
         </tbody>
       </table>
       </div>
       <div class="worked">
-        <span class="box-label">Worked example · test.txt run 1</span>
-        <p>Success rate \(= 100 \times 1000 / (1000 + 2843 + 0) = 100{,}000 / 3{,}843 = 26.02\%\), printed as 26.0%. Throughput \(= 1000 / 9.31 \approx 107.4\) txn/s, printed as 107.47 (the duration is shown rounded). For <code>test4.txt</code>, 2 commits in 0.38 s gives 5.29 txn/s. Of that 0.38 s, 0.20 s is the fixed final sleep, so throughput on the tiny files says nothing about the engine.</p>
+        <span class="box-label">Worked example · pre-fix test.txt run 1</span>
+        <p>Success rate \(= 100 \times 1000 / (1000 + 2843 + 0) = 100{,}000 / 3{,}843 = 26.02\%\), printed as 26.0%. Throughput \(= 1000 / 9.31 \approx 107.4\) txn/s, printed as 107.47 (the duration is displayed rounded). On the 2-transaction <code>test4.txt</code>, 0.20 s of a 0.38 s run is the fixed final sleep, so throughput on the tiny files says nothing about the engine.</p>
       </div>
       <div class="callout impl">
-        <span class="box-label">Be careful · "100% commit rate" and the harness's own success rate measure different things</span>
-        <p>"Every transaction eventually committed" means \(\text{completed} / \text{transactions} = 1000/1000\). The harness's "Transaction Success Rate" on the same run is 26.0% (<code>test.txt</code>) or 13.0% (<code>dead_test.txt</code>). Anyone who opens <code>transaction_metrics.txt</code> sees the second number first.</p>
+        <span class="box-label">Be careful · "every transaction committed" and "success rate" measure different things</span>
+        <p>"Every transaction eventually committed" means \(\text{completed} / \text{transactions} = 1000/1000\). The harness's own "Transaction Success Rate" on the same pre-fix runs was 26.0% on <code>test.txt</code> and 13.0% on <code>dead_test.txt</code>. Anyone who opens <code>transaction_metrics.txt</code> sees the second number first.</p>
       </div>
-    </section>
-
-    <section>
-      <h2 id="s6">6. What the restarts looked like</h2>
       <div class="callout result">
-        <span class="box-label">Result · restarts per transaction (rows of transaction_metrics.txt, reordered build)</span>
+        <span class="box-label">Result · restarts per transaction, pre-fix text harness (rows of transaction_metrics.txt)</span>
         <div class="tbl-wrap">
         <table>
           <thead><tr><th>Run</th><th class="num">0</th><th class="num">1</th><th class="num">2</th><th class="num">3</th><th class="num">4</th><th class="num">5</th><th class="num">6</th><th class="num">7</th><th class="num">8</th><th class="num">9</th><th class="num">total</th></tr></thead>
@@ -153,33 +164,127 @@ int calculateBackoff(int retryCount) {
           </tbody>
         </table>
         </div>
-        <p>Row check, <code>dead_test.txt</code> #1: \(44 \cdot 5 + 345 \cdot 6 + 477 \cdot 7 + 134 \cdot 8 = 220 + 2{,}070 + 3{,}339 + 1{,}072 = 6{,}701\) ✓. Average latency 25,087 ms, max 33,909 ms (#1). <code>test.txt</code> #1: average 3,529 ms, max 8,984 ms.</p>
+        <p>Row check, <code>dead_test.txt</code> #1: \(44 \cdot 5 + 345 \cdot 6 + 477 \cdot 7 + 134 \cdot 8 = 220 + 2{,}070 + 3{,}339 + 1{,}072 = 6{,}701\) ✓. Average latency 25,087 ms, max 33,909 ms. The text harness hasn't been re-measured since the fix, so these numbers describe the old engine, including its tail victims.</p>
       </div>
-      <p><strong>What this supports.</strong> On <code>dead_test.txt</code>, no transaction committed before its fifth abort, and most took 6–8. With the section 4 table, 7 restarts alone mean about 10 s of base backoff (\(2{,}480 + 2{,}560 + 5{,}000 = 10{,}040\) ms), which is consistent with the 25 s average latency. On <code>test.txt</code>, 43–48% of transactions never restarted, while most of the rest restarted 5–6 times. <strong>What it doesn't.</strong> The audit can't split the restarts into necessary aborts, tail aborts (Part 3, section 4) and phantom-edge aborts, and it has only two runs per file.</p>
     </section>
 
     <section>
-      <h2 id="s7">7. A latent way to exit without committing</h2>
-      <p>The harness checks for an abort only after a read or write. If the detector aborts a transaction whose wait already ended (a stale edge, Part 3, section 2) and that thread's next operation is <code>COMMIT</code>, then <code>Transaction::commit()</code> refuses because the state is <code>ABORTED</code>. <code>recordTxnEnd</code> is never called, and the thread falls off the end of its operation list uncommitted. None of the 1,000-transaction runs in the audit showed an uncommitted row (0 in 5 runs). The code doesn't prevent it.</p>
-    </section>
-
-    <section>
-      <h2 id="s8">8. The other harnesses</h2>
+      <h2 id="s6">6. The benchmark: a pool, a serial baseline and real values</h2>
+<pre><code>// tests/benchmark.cpp:181-253 (worker, abridged)
+while ((idx = nextTxn.fetch_add(1)) &lt; c.txns) {                 // pull the next transaction
+    int txnId = -1, priority = 1, attempt = 0;
+    while (true) {
+        txnId = cm.beginTransaction("", txnId, priority);         // reuse the ID on retry
+        for (op : workload[idx]) {
+            if (!cm.acquireLock(txnId, op.item, op.write ? EXCLUSIVE : SHARED, true)) { failed = true; break; }
+            local.push_back({seq.fetch_add(1), idx, op.write ? 'W' : 'R', op.item});   // lock held
+            sleep_for(microseconds(c.workUs));                     // simulated I/O, lock still held
+            read values[op.item] (or this txn's own earlier write); if write: buffer value + 1
+        }
+        if (!failed &amp;&amp; cm.commitTransaction(txnId, install)) { commits++; break; }  // install: store buffered writes
+        if (state != ABORTED) cm.abortTransaction(txnId);
+        aborts++;  attempt++;  priority++;
+        sleep_for(min(backoffBase &lt;&lt; min(attempt, 20), backoffCap) * jitter(70..129) / 100);
+    }
+}</code></pre>
+      <ul>
+        <li><strong>A fixed workload.</strong> <code>generateWorkload</code> draws every transaction's operations once, from <code>std::mt19937</code> with seed 42: each operation picks an item uniformly from 1..items and is a write with probability <code>--write-ratio</code>. Every thread count runs the identical list of transactions.</li>
+        <li><strong>A pool of T workers.</strong> Each worker pulls the next transaction index atomically. With T = 1, the transactions run one after another, which is the <em class="term">serial baseline</em>: same binary, engine, workload and machine.</li>
+        <li><strong>Work while holding locks.</strong> <code>--work-us 1000</code> sleeps 1 ms after each lock is granted, standing in for disk or network I/O. A thread asleep here holds its locks but uses no CPU, which is the situation where extra threads can pay off.</li>
+        <li><strong>Values and deferred writes.</strong> Each item holds an integer. A write stores (the latest value this transaction saw) + 1 in a private buffer. The buffer is installed through the <code>beforeRelease</code> hook, after the commit point but while every lock is still held (Part 1, section 6). An aborted attempt's buffer is simply thrown away.</li>
+        <li><strong>Timing.</strong> The clock starts when a latch releases all workers (threads already exist) and stops when the last one joins. The checks run after the clock stops.</li>
+        <li><strong>Reporting.</strong> Throughput = commits ÷ seconds per run, with 5 runs per thread count. The printed figure is the median. Speedup = median at T ÷ median at the first thread count listed (T = 1).</li>
+      </ul>
+      <div class="eq">
+        \[ b_k = \min\big(1000 \cdot 2^{k},\ 100{,}000\big) \cdot \frac{j}{100}\ \mu\text{s}, \qquad j \in \{70, \ldots, 129\},\ k = 1, 2, \ldots \]
+        <p class="note">\(k\) is the retry number (<code>attempt</code> after its increment). Base 1,000 µs and cap 100,000 µs are the defaults (<code>tests/benchmark.cpp:57-58</code>). \(j\) is drawn uniformly per retry, and the division is integer division in microseconds.</p>
+      </div>
       <div class="tbl-wrap">
       <table>
-        <thead><tr><th>File</th><th>Status</th><th>Why</th></tr></thead>
+        <caption>Benchmark backoff after the k-th abort</caption>
+        <thead><tr><th class="num">k</th><th class="num">before jitter (ms)</th><th class="num">with jitter (ms)</th></tr></thead>
         <tbody>
-          <tr><td><code>src/2pl_test_runner.cpp</code></td><td>doesn't build</td><td>calls undefined <code>checkForDeadlocks()</code>, and calls non-static <code>initLogFile</code> as static (Part 2, section 8)</td></tr>
-          <tr><td><code>tests/test_lock_manager.cpp</code></td><td>doesn't build</td><td><code>LockManager(logger)</code>, but the constructor needs <code>(Logger&amp;, ResourceAllocationGraph&amp;)</code></td></tr>
-          <tr><td><code>tests/test_tree_protocol.cpp</code></td><td>empty</td><td>tree-locking protocol never written</td></tr>
-          <tr><td><code>makefile</code> <code>run</code></td><td>builds the working harness, runs <code>test4.txt</code></td><td>no target for the other two</td></tr>
+          <tr><td class="num">1</td><td class="num">2</td><td class="num">1.4 – 2.58</td></tr>
+          <tr><td class="num">2</td><td class="num">4</td><td class="num">2.8 – 5.16</td></tr>
+          <tr><td class="num">3</td><td class="num">8</td><td class="num">5.6 – 10.32</td></tr>
+          <tr><td class="num">4</td><td class="num">16</td><td class="num">11.2 – 20.64</td></tr>
+          <tr><td class="num">5</td><td class="num">32</td><td class="num">22.4 – 41.28</td></tr>
+          <tr><td class="num">6</td><td class="num">64</td><td class="num">44.8 – 82.56</td></tr>
+          <tr><td class="num">7+</td><td class="num">100 (cap)</td><td class="num">70 – 129</td></tr>
         </tbody>
       </table>
       </div>
-      <p>So the repo contains no unit test that passes and no automated correctness check. The only executable evidence is this harness's metrics and logs.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · throughput and speedup from the CSV (config B)</span>
+        <p>8 threads, run 0: \(1000 / 0.6560 \approx 1{,}524\) txn/s. The CSV says 1,524.33, because the seconds column is rounded to 4 decimals. The five 8-thread runs sorted are 1,503.66, 1,509.26, <strong>1,523.23</strong>, 1,524.33 and 1,527.12, so the median is 1,523.23. The 1-thread median is 191.15. Speedup \(= 1{,}523.23 / 191.15 = 7.97\).</p>
+        <p>Serial sanity check: 1,000 transactions × 4 operations × 1 ms is 4.0 s of requested sleep, and the serial runs took 5.22–5.25 s. For run 0, \(5.2269 - 4.0 = 1.23\) s over 1,000 transactions is 1.23 ms per transaction of overhead: sleeps overshooting what was asked for, plus the engine itself. How that splits wasn't measured.</p>
+      </div>
     </section>
 
-    <div class="recap"><span class="box-label">Carried forward</span>per-transaction grouping and the racy item map (§1) · workload statistics, and <code>dead_test.txt</code>'s built-in bipartite deadlocks (§2) · 1,000 barrier-released threads (§3) · aging \(p = 1 + k\) and backoff \(b(p)\), with jitter past the cap (§4) · exact metric definitions: the success-rate formula, and what throughput's duration includes (§5) · restart distributions: every <code>dead_test.txt</code> transaction aborted ≥ 5 times (§6) · the latent uncommitted exit (§7) · the other harnesses don't build (§8).</div>
+    <section>
+      <h2 id="s7">7. The two correctness checks</h2>
+<pre><code>// tests/benchmark.cpp:123-161 (abridged): transactionsInCycles
+for each item: sort its committed R/W events by seq
+    for each pair (a before b) from different txns where a or b is a write:
+        add edge a.txn -&gt; b.txn (once)
+Kahn's algorithm: repeatedly remove a transaction with no incoming edges
+return numTxns - removed          // 0 means acyclic: conflict-serializable
+// 274-281: lost updates
+for each item: final value must equal the number of committed W events on it</code></pre>
+      <p><strong>Check 1, conflict-serializability.</strong> Every committed read and write gets a sequence number taken right after its lock is granted, while that lock is still held. Two conflicting operations can't both hold their locks at once, so the order of their sequence numbers is the order in which they really happened. Those pairs give page 1, section 7's precedence graph. <em class="term">Kahn's algorithm</em> builds a serial order by repeatedly removing a transaction that nothing points to. If transactions are left over, the graph has a cycle. The benchmark reports how many were left: every cycle member, plus every transaction that must come after one.</p>
+      <p><strong>Check 2, lost updates.</strong> Since every write is "value + 1", a correct run must end with each item's value equal to the number of committed writes to it. A transaction that writes an item twice increments it twice, and counts twice.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · both checks on a broken history</span>
+        <p>Suppose item 5 starts at 0, and the committed events are: T0 R(5) seq 1, T1 W(5) seq 2, T1 C seq 3, T0 W(5) seq 4, T0 C seq 5. Pairs on item 5: (T0 R, T1 W) gives T0→T1, and (T1 W, T0 W) gives T1→T0. Neither transaction has zero in-degree, so Kahn removes nothing and the result is 2: not serializable. Values: T1 read nothing before writing, so it saw 0 and installed 1. T0 read 0 at seq 1 and also installs 1. The final value is 1, but there were 2 committed writes, so that's 1 lost-update item. Correct 2PL makes this history impossible, because T1's X on item 5 would have waited for T0's S.</p>
+      </div>
+      <div class="callout impl">
+        <span class="box-label">Be careful · what the checks can and can't show</span>
+        <p>Both checks look only at committed attempts. Check 1 tests conflict-serializability, which is the textbook sufficient condition and exactly what 2PL promises. Passing both checks in a run shows that run was serializable. It doesn't prove the engine can never produce a bad schedule: the race in Part 3, section 6 passed at 64 threads and failed at 1,000. The lost-update check is weaker than check 1. In the 1,000-thread failures it still passed while check 1 failed.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s8">8. The benchmark workloads, and how much they collide</h2>
+      <div class="tbl-wrap">
+      <table>
+        <caption>tests/run_benchmarks.sh, plus the makefile's quick check</caption>
+        <thead><tr><th>Label</th><th class="num">Txns</th><th class="num">Ops</th><th class="num">Items</th><th class="num">Writes</th><th class="num">Work per op</th><th>Threads</th><th class="num">Runs</th></tr></thead>
+        <tbody>
+          <tr><td>A <code>cpu_only_low</code></td><td class="num">2,000</td><td class="num">4</td><td class="num">1,000</td><td class="num">20%</td><td class="num">0</td><td>1–32</td><td class="num">5</td></tr>
+          <tr><td>B <code>io1ms_low</code></td><td class="num">1,000</td><td class="num">4</td><td class="num">1,000</td><td class="num">20%</td><td class="num">1 ms</td><td>1–64, 1,000</td><td class="num">5</td></tr>
+          <tr><td>C <code>io1ms_high</code></td><td class="num">1,000</td><td class="num">4</td><td class="num">20</td><td class="num">30%</td><td class="num">1 ms</td><td>1–64, 1,000</td><td class="num">5</td></tr>
+          <tr><td><code>make test</code> check</td><td class="num">300</td><td class="num">4</td><td class="num">20</td><td class="num">30%</td><td class="num">0.2 ms</td><td>1, 8, 64</td><td class="num">2</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="eq">
+        \[ P(\text{two transactions share an item}) \approx 1 - \Big(1 - \frac{4}{n}\Big)^{4} \]
+        <p class="note">\(n\) is the number of items and each transaction touches 4. The approximation treats one transaction's 4 items as distinct and the other's 4 draws as independent. Sharing an item is an upper bound on conflicting, because two reads of the same item don't conflict.</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · 1,000 items vs 20 items</span>
+        <p>\(n = 1{,}000\): \(1 - 0.996^4 = 1 - 0.9841 = 0.0159\), about 1.6%. \(n = 20\): \(1 - 0.8^4 = 1 - 0.4096 = 0.5904\), about 59%. With 64 transactions running at once, each one overlaps about \(63 \times 0.0159 \approx 1.0\) others in config B, but \(63 \times 0.5904 \approx 37.2\) others in config C. That's the difference between near-linear scaling and thrashing (page 4, section 10).</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s9">9. Tests and the other programs</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>File</th><th>What it is</th><th>Recorded status (make test, 2026-09-11)</th></tr></thead>
+        <tbody>
+          <tr><td><code>tests/test_lock_manager.cpp</code></td><td>unit tests of compatibility, release, upgrade and queries</td><td>20 checks passed. It didn't compile before 47e3a19, because of a constructor signature change.</td></tr>
+          <tr><td><code>tests/test_correctness.cpp</code></td><td>16 regression checks for the fixed bugs</td><td>all 16 passed</td></tr>
+          <tr><td><code>tests/benchmark.cpp</code></td><td>section 6</td><td>quick check: all 6 runs passed both checks</td></tr>
+          <tr><td><code>src/2pl_test_runner.cpp</code></td><td>the README's original runner</td><td>compiles since 47e3a19; not part of <code>make test</code></td></tr>
+          <tr><td><code>tests/test_tree_protocol.cpp</code></td><td>empty file</td><td>tree-locking protocol never written</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>The makefile's <code>run</code> target runs the text harness on <code>test4.txt</code>. <code>test</code> runs the three test programs, and <code>bench</code> runs the full sweep script.</p>
+    </section>
+
+    <div class="recap"><span class="box-label">Carried forward</span>two drivers and how they differ (§1) · per-transaction grouping and the fixed item-map race (§2) · the text workloads, including dead_test.txt's built-in bipartite deadlocks (§3) · 1,000 barrier-released threads and backoff \(b(p)\) (§4) · text-harness metric definitions and pre-fix restart distributions (§5) · the benchmark: fixed workload, serial baseline at T = 1, work while holding locks, deferred writes, median of 5, backoff \(b_k\) (§6) · the precedence-graph and lost-update checks, and their limits (§7) · configs A/B/C and overlap probability, 1.6% vs 59% (§8) · the tests and their recorded status (§9).</div>
   </main>
   <div class="pager">
     <a href="07-part-deadlock-detector.html"><span class="lbl">Back</span>← Part 3 · DeadlockDetector</a>

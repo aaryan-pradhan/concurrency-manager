@@ -18,27 +18,27 @@
     <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Part 1 · Transaction and ConcurrencyManager</span></div>
     <span class="stage-tag">Part 1</span>
     <h1 class="title">The facade: Transaction and ConcurrencyManager</h1>
-    <p class="dek">How the engine is wired together, how a transaction's state machine enforces the two phases, which 2PL variant actually runs, and two defects that sit below every result: a shared registry with no latch, and a constructor that uses objects before they exist.</p>
+    <p class="dek">How the engine is wired together, how a transaction's state machine enforces the two phases, which 2PL variant actually runs, and three defects that commit 47e3a19 fixed in this layer: a registry with no latch, a state field two threads wrote without synchronization, and a constructor that used objects before they existed.</p>
   </header>
   <main>
 
-    <div class="recap"><span class="box-label">Uses</span>transactions and ACID from <a href="01-transactions-and-serializability.html#s2">page 1, section 2</a> · data races and UB from <a href="02-threads-mutexes-condvars.html#s2">page 2, section 2</a> · dangling pointers from <a href="02-threads-mutexes-condvars.html#s7">page 2, section 7</a> · member initialization order from <a href="02-threads-mutexes-condvars.html#s9">page 2, section 9</a> · the 2PL rule and variants from <a href="03-locks-and-2pl.html#s5">page 3, sections 5</a>–<a href="03-locks-and-2pl.html#s7">7</a> · victims and restarts from <a href="04-deadlocks-and-wait-for-graphs.html#s6">page 4, section 6</a>.</div>
+    <div class="recap"><span class="box-label">Uses</span>transactions and ACID from <a href="01-transactions-and-serializability.html#s2">page 1, section 2</a> · data races and UB from <a href="02-threads-mutexes-condvars.html#s2">page 2, section 2</a> · mutexes from <a href="02-threads-mutexes-condvars.html#s3">page 2, section 3</a> · dangling pointers from <a href="02-threads-mutexes-condvars.html#s7">page 2, section 7</a> · atomics from <a href="02-threads-mutexes-condvars.html#s8">page 2, section 8</a> · member initialization order from <a href="02-threads-mutexes-condvars.html#s9">page 2, section 9</a> · the 2PL rule and its variants from <a href="03-locks-and-2pl.html#s5">page 3, sections 5</a>–<a href="03-locks-and-2pl.html#s7">7</a> · victims and restarts from <a href="04-deadlocks-and-wait-for-graphs.html#s6">page 4, section 6</a>.</div>
 
     <section>
       <div class="spec-quote">
         <span class="box-label">include/concurrency_manager.h · class comment, and docs/14-module-concurrency-manager.md</span>
         <blockquote>"Coordinates transaction management using Two-Phase Locking protocol with deadlock detection" · "This is the facade of the whole project — the one class every test harness actually talks to. It doesn't implement locking or deadlock detection itself; it owns the classes that do (LockManager, ResourceAllocationGraph, DeadlockDetector), enforces the 2PL phase rules, and manages the collection of currently-active Transaction objects."</blockquote>
       </div>
-      <p>"Enforces the 2PL phase rules" is page 3, section 5. "Deadlock detection" is page 4, sections 4–6. "Owns the classes" is where C++ construction order (page 2, section 9) matters. "Currently-active Transaction objects" are shared across threads, which is where data races (page 2, section 2) come in.</p>
+      <p>"Enforces the 2PL phase rules" is page 3, section 5. "Deadlock detection" is page 4, sections 4–6. "Owns the classes" is where C++ construction order (page 2, section 9) matters. "Currently-active Transaction objects" are shared between threads, which is where data races (page 2, section 2) come in. Every code line quoted on this page is from <code>main</code> at commit 47e3a19. Where that commit changed something, a yellow box shows what was there before.</p>
     </section>
 
     <section>
       <h2 id="s1">1. The architecture in one picture</h2>
       <div class="figure">
-        <svg viewBox="0 0 640 300" width="640" height="300" role="img" aria-label="Architecture: 1,000 harness threads call ConcurrencyManager, which owns LockManager, ResourceAllocationGraph, Logger and DeadlockDetector. The detector thread polls LockManager. A static Transaction registry is read by LockManager and the detector.">
+        <svg viewBox="0 0 640 300" width="640" height="300" role="img" aria-label="Architecture: harness threads call ConcurrencyManager, which owns LockManager, ResourceAllocationGraph, Logger and DeadlockDetector. The detector thread takes a wait-for snapshot from LockManager and releases victims' locks. A latched Transaction registry is read by LockManager and the detector.">
           <rect x="20" y="20" width="170" height="54" rx="8" fill="var(--paper-raised)" stroke="var(--ink-soft)"/>
           <text x="105" y="43" font-size="12" fill="var(--ink)" text-anchor="middle">harness threads</text>
-          <text x="105" y="61" font-size="11" fill="var(--ink-soft)" text-anchor="middle">1 per transaction</text>
+          <text x="105" y="61" font-size="11" fill="var(--ink-soft)" text-anchor="middle">1 per txn, or a pool</text>
           <rect x="235" y="20" width="190" height="54" rx="8" fill="var(--accent-soft)" stroke="var(--accent)"/>
           <text x="330" y="43" font-size="12" fill="var(--accent)" text-anchor="middle">ConcurrencyManager</text>
           <text x="330" y="61" font-size="11" fill="var(--ink-soft)" text-anchor="middle">2PL phase check, txn map</text>
@@ -56,158 +56,193 @@
           <polygon points="459,147 449,142 449,152" fill="var(--ink-soft)"/>
           <rect x="20" y="120" width="170" height="54" rx="8" fill="var(--warn-soft)" stroke="var(--warn)"/>
           <text x="105" y="143" font-size="12" fill="var(--warn)" text-anchor="middle">DeadlockDetector</text>
-          <text x="105" y="161" font-size="11" fill="var(--ink-soft)" text-anchor="middle">own thread, every 100 ms</text>
+          <text x="105" y="161" font-size="11" fill="var(--ink-soft)" text-anchor="middle">own thread, periodic</text>
           <line x1="190" y1="147" x2="228" y2="147" stroke="var(--warn)" stroke-width="2"/>
           <polygon points="234,147 224,142 224,152" fill="var(--warn)"/>
-          <rect x="160" y="226" width="340" height="54" rx="8" fill="var(--impl-soft)" stroke="var(--impl)"/>
-          <text x="330" y="249" font-size="12" fill="var(--impl)" text-anchor="middle">Transaction::active_transactions_</text>
-          <text x="330" y="267" font-size="11" fill="var(--ink-soft)" text-anchor="middle">static map, no mutex (section 3)</text>
-          <line x1="330" y1="174" x2="330" y2="219" stroke="var(--impl)" stroke-width="2" stroke-dasharray="4 3"/>
-          <polygon points="330,225 325,215 335,215" fill="var(--impl)"/>
-          <line x1="105" y1="174" x2="200" y2="222" stroke="var(--impl)" stroke-width="2" stroke-dasharray="4 3"/>
-          <polygon points="205,225 194,224 199,215" fill="var(--impl)"/>
+          <rect x="160" y="226" width="340" height="54" rx="8" fill="var(--good-soft)" stroke="var(--good)"/>
+          <text x="330" y="249" font-size="12" fill="var(--good)" text-anchor="middle">Transaction registry</text>
+          <text x="330" y="267" font-size="11" fill="var(--ink-soft)" text-anchor="middle">static map + registry_mutex_, shared_ptr</text>
+          <line x1="330" y1="174" x2="330" y2="219" stroke="var(--good)" stroke-width="2" stroke-dasharray="4 3"/>
+          <polygon points="330,225 325,215 335,215" fill="var(--good)"/>
+          <line x1="105" y1="174" x2="200" y2="222" stroke="var(--good)" stroke-width="2" stroke-dasharray="4 3"/>
+          <polygon points="205,225 194,224 199,215" fill="var(--good)"/>
         </svg>
-        <figcaption>Solid arrows are calls. Dashed arrows are unsynchronized lookups into the static transaction registry.</figcaption>
+        <figcaption>Solid arrows are calls. Dashed arrows are lookups into the static registry, each under registry_mutex_.</figcaption>
       </div>
-      <p>A single <code>Logger</code> (not drawn) is shared by every box. One <code>ConcurrencyManager</code> object is a global in the working harness: <code>ConcurrencyManager cm("deadlock_test.log", 100);</code> (<code>tests/test_deadlock_detection.cpp:303</code>).</p>
+      <p>One <code>Logger</code> (not drawn) is shared by every box. The repo has two working drivers. The text-schedule harness uses a single global <code>ConcurrencyManager cm("deadlock_test.log", 100);</code> (<code>tests/test_deadlock_detection.cpp:305</code>), with a 100 ms detection interval. The benchmark creates a fresh <code>ConcurrencyManager</code> for every run, with a 10 ms interval and the log level set to WARNING (<code>tests/benchmark.cpp:168</code>). Both are covered in <a href="08-part-harness-and-metrics.html">Part 4</a>.</p>
     </section>
 
     <section>
-      <h2 id="s2">2. Transaction: a four-state record</h2>
-<pre><code>enum class TransactionState { GROWING, SHRINKING, COMMITTED, ABORTED };
+      <h2 id="s2">2. Transaction: a four-state record with an atomic state</h2>
+<pre><code>// include/transaction.h:19-39 (abridged)
+enum class TransactionState { GROWING, SHRINKING, COMMITTED, ABORTED };
 
 class Transaction {
-    int txnId;  TransactionState state;  std::set&lt;int&gt; locksHeld;
-    std::chrono::system_clock::time_point startTime;  std::string metadata;  int priority;
-    ...
+    int txnId;
+    std::atomic&lt;TransactionState&gt; state;   // written by the owning thread and the deadlock detector
+    std::set&lt;int&gt; locksHeld;               // touched only by the owning thread
+    std::chrono::system_clock::time_point startTime;
+    std::string metadata;
+    int priority;                          // used only to choose deadlock victims
 };</code></pre>
-      <p>A new transaction starts <code>GROWING</code>. <code>Transaction::releaseLock</code> flips it to <code>SHRINKING</code> on its first release, and <code>ConcurrencyManager::acquireLock</code> refuses any transaction that isn't <code>GROWING</code>. Together those two checks are the 2PL rule from page 3, section 5:</p>
-<pre><code>// src/transaction.cpp:30-51
-bool Transaction::releaseLock(int resourceId) {
-    if (locksHeld.find(resourceId) == locksHeld.end()) return false;
-    // In strict 2PL we only release locks after commit/abort,
-    // but we implement the general case here
-    if (state == TransactionState::GROWING) beginShrinking();
-    ...
-    locksHeld.erase(resourceId);
-    return true;
+      <p>A new transaction starts in <code>GROWING</code>. Its first lock release calls <code>beginShrinking()</code>, which moves it to <code>SHRINKING</code> (<code>src/transaction.cpp:24-42</code>). <code>ConcurrencyManager::acquireLock</code> refuses any transaction that isn't <code>GROWING</code> (<code>src/concurrency_manager.cpp:135</code>). Those two checks together are the 2PL rule from page 3, section 5: once you release, you can never acquire again.</p>
+      <p>Two threads can try to end the same transaction at the same moment. The owning thread calls <code>commit()</code>, and the deadlock detector's thread may call <code>abort()</code> because it picked this transaction as a victim. Exactly one of them must win. The code gets that guarantee with <em class="term">compare-and-swap</em> (CAS): <code>state.compare_exchange_weak(expected, desired)</code> atomically checks whether the current value equals <code>expected</code>. If it does, it stores <code>desired</code> and returns <code>true</code>. If not, it copies the current value into <code>expected</code> and returns <code>false</code>. The "weak" form may also fail spuriously, which is why it sits in a loop.</p>
+<pre><code>// src/transaction.cpp:44-64
+bool Transaction::commit() {
+    TransactionState s = state.load();
+    while (s == TransactionState::GROWING || s == TransactionState::SHRINKING) {
+        if (state.compare_exchange_weak(s, TransactionState::COMMITTED)) return true;
+    }
+    return false;
+}
+bool Transaction::abort() {
+    TransactionState s = state.load();
+    while (s != TransactionState::COMMITTED) {
+        if (s == TransactionState::ABORTED || state.compare_exchange_weak(s, TransactionState::ABORTED)) return true;
+    }
+    return false;
 }</code></pre>
-      <p><code>priority</code> (default 1) is used only by the deadlock detector to pick a victim, and a lower number is aborted first. <code>locksHeld</code> is a mirror of the lock table, updated only when <code>LockManager::acquireLock</code> returns <code>true</code>.</p>
-      <div class="callout impl">
-        <span class="box-label">In the code · the phase flip depends on an unreliable mirror</span>
-        <p>The flip to <code>SHRINKING</code> happens only if <code>resourceId</code> is in <code>locksHeld</code>. <a href="06-part-lock-manager.html#s4">Part 2, section 4</a> shows that a lock granted after waiting is reported as <code>false</code>, so it never enters <code>locksHeld</code>. An early <code>RELEASE</code> of such a lock frees it in the lock table but leaves the transaction <code>GROWING</code>, free to acquire more locks. None of the 1,000-transaction test files use <code>RELEASE</code>, so this never fires in the measured runs.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · commit and abort race</span>
+        <p>Both threads load <code>GROWING</code>. <strong>Case 1:</strong> the detector's CAS runs first and stores <code>ABORTED</code>. The owner's CAS then fails, and <code>s</code> becomes <code>ABORTED</code>, which ends the <code>while</code> loop, so <code>commit()</code> returns <code>false</code> and the transaction restarts. <strong>Case 2:</strong> the owner's CAS runs first and stores <code>COMMITTED</code>. The detector's CAS fails, and <code>s</code> becomes <code>COMMITTED</code>, which ends its loop, so <code>abort()</code> returns <code>false</code> and the detector logs that the victim "already finished". There's no interleaving in which both return <code>true</code>.</p>
       </div>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · a racing state field</span>
+        <p><strong>Before:</strong> <code>state</code> was a plain <code>TransactionState</code>. The detector thread wrote it (<code>txn-&gt;abort()</code>) while worker threads read it, with no mutex in common. That's a data race, so the behaviour was undefined (page 2, section 2). <code>commit()</code> and <code>abort()</code> each checked the state and then set it in two separate steps, so both could succeed. <strong>After:</strong> <code>std::atomic&lt;TransactionState&gt;</code> with the CAS loops above. <code>tests/test_correctness.cpp:110-117</code> checks the sequential cases: abort then commit fails, and commit then abort fails.</p>
+      </div>
+      <p><code>priority</code> (default 1) is read only by the deadlock detector, and a lower number is aborted first. <code>locksHeld</code> is a per-transaction copy of which resources it holds. It's updated only by the owning thread, through <code>ConcurrencyManager</code>, when <code>LockManager::acquireLock</code> returns <code>true</code>.</p>
     </section>
 
     <section>
-      <h2 id="s3">3. The static registry</h2>
-<pre><code>// src/transaction.cpp:110-131
-std::unordered_map&lt;txn_id_t, Transaction*&gt; Transaction::active_transactions_;
-void Transaction::RegisterTransaction(Transaction* txn) { active_transactions_[txn-&gt;getId()] = txn; }
-void Transaction::UnregisterTransaction(txn_id_t id)   { active_transactions_.erase(id); }
-Transaction* Transaction::GetTransaction(txn_id_t id)  { auto it = active_transactions_.find(id); ... }</code></pre>
-      <p>Every <code>Transaction</code> registers itself in its constructor and unregisters in its destructor, so that <code>LockManager</code> and <code>DeadlockDetector</code> can look up a transaction's state and priority by ID.</p>
+      <h2 id="s3">3. The registry: latched, and holding shared_ptrs</h2>
+<pre><code>// include/transaction.h:136-146 · src/transaction.cpp:105-134 (abridged)
+static std::unordered_map&lt;txn_id_t, std::shared_ptr&lt;Transaction&gt;&gt; active_transactions_;
+static std::mutex registry_mutex_;
+
+static void RegisterTransaction(const std::shared_ptr&lt;Transaction&gt;&amp; txn);          // locks registry_mutex_
+static void UnregisterTransaction(txn_id_t id, const Transaction* expected = nullptr); // locks it
+static std::shared_ptr&lt;Transaction&gt; GetTransaction(txn_id_t id);                     // locks it, returns a copy</code></pre>
+      <p><code>LockManager</code> and <code>DeadlockDetector</code> use this registry to look up a transaction's state and priority by ID. Three things make it safe to share:</p>
+      <ul>
+        <li><strong>One mutex</strong> guards every insert, erase and lookup.</li>
+        <li><strong><em class="term">shared_ptr</em></strong> is a reference-counted pointer: the object is destroyed only when the last copy goes away. <code>GetTransaction</code> returns a copy, so a caller keeps the object alive even if its owner erases the map entry a microsecond later. A dangling pointer (page 2, section 7) can't happen.</li>
+        <li><strong>The <code>expected</code> argument</strong> removes an entry only if it still points to that exact object. Cleanup for an old transaction can't delete a new transaction that has since registered under the same ID.</li>
+      </ul>
+      <p><code>registry_mutex_</code> is a <em class="term">leaf lock</em>: code holding it never acquires any other lock. So <code>LockManager</code> can call <code>GetTransaction</code> while holding its own mutex without creating a lock-ordering deadlock.</p>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · an unlatched map of raw pointers</span>
+        <p><strong>Before:</strong> <code>std::unordered_map&lt;txn_id_t, Transaction*&gt;</code>, with no mutex. Each <code>Transaction</code> registered itself in its constructor and unregistered in its destructor. Inserts and erases ran under <code>ConcurrencyManager</code>'s mutex, lookups under <code>LockManager</code>'s mutex or none, and no single mutex covered both. A restart erased and re-inserted entries while other threads called <code>find</code>, which was undefined behaviour (a rehash during a lookup can crash), and a lookup could return a pointer to a destroyed object. <strong>After:</strong> the latched <code>shared_ptr</code> registry above. Registration moved out of the constructor and into <code>ConcurrencyManager</code>, which registers only once the object is owned by a <code>shared_ptr</code> (<code>src/transaction.cpp:10-11</code>).</p>
+      </div>
       <div class="callout impl">
-        <span class="box-label">In the code · a data race on a hash map (UB)</span>
-        <p>Three different mutexes are involved, but none of them protects this map. Inserts and erases happen inside <code>ConcurrencyManager</code>'s mutex (in <code>beginTransaction</code>, and the destructor runs when <code>transactions.erase</code> is called). Lookups happen inside <code>LockManager</code>'s mutex (the wait predicate, <code>acquireLock</code>) and on the detector thread with no LockManager mutex held (<code>DFS</code>, <code>BuildWaitForGraph</code>). A restart erases and re-inserts entries while other threads call <code>find</code>. By page 2, section 2 that's undefined behaviour, and a rehash during a <code>find</code> can crash. Separately, <code>Transaction::state</code> is written by the detector thread (<code>txn-&gt;abort()</code>) and read by worker threads with no common mutex, which is another data race.</p>
-        <p>ThreadSanitizer couldn't confirm this on the audit machine: it failed to flag even a deliberate two-thread race there. These findings come from reading the code.</p>
+        <span class="box-label">In the code · an ID doesn't name one attempt</span>
+        <p>The registry is keyed by ID alone. After a restart, the same ID refers to a <em>different</em> <code>Transaction</code> object. Code that remembers only the ID can't tell the old attempt from the new one. <a href="07-part-deadlock-detector.html#s6">Part 3, section 6</a> shows the one place where that still causes a bug.</p>
       </div>
     </section>
 
     <section>
       <h2 id="s4">4. beginTransaction, and restarting under the same ID</h2>
-<pre><code>// src/concurrency_manager.cpp:55-114 (abridged)
+<pre><code>// src/concurrency_manager.cpp:55-119 (abridged)
 int ConcurrencyManager::beginTransaction(const std::string&amp; metadata, int requestedTxnId, int priority) {
     std::lock_guard&lt;std::mutex&gt; lock(mtx);
-    if (requestedTxnId == -1) txnId = nextTxnId++;              // new
-    else if (existing txn is ABORTED) transactions.erase(txnId); // restart: replace it
-    else if (existing txn is active/committed) return -1;
-    transactions[txnId] = std::make_unique&lt;Transaction&gt;(txnId, metadata, priority);
+    if (requestedTxnId == -1) txnId = nextTxnId++;                      // brand new
+    else if (existing txn with that ID is ABORTED) {                    // restart
+        lockManager.releaseAllLocks(txnId);                             // line 84
+        Transaction::UnregisterTransaction(txnId, txn.get());
+        transactions.erase(txnId);
+    } else if (it exists and isn't ABORTED) return -1;
+    auto txn = std::make_shared&lt;Transaction&gt;(txnId, metadata, priority);
+    transactions[txnId] = txn;
+    Transaction::RegisterTransaction(txn);
     return txnId;
 }</code></pre>
-      <p>The harness restarts a deadlock victim by calling <code>beginTransaction(..., txnId, priority)</code> with its old ID and a priority one higher (<a href="08-part-harness-and-metrics.html#s4">Part 4, section 4</a>).</p>
+      <p>Both harnesses restart an aborted transaction by calling <code>beginTransaction(..., txnId, priority)</code> with its old ID and a priority one higher (<a href="08-part-harness-and-metrics.html#s4">Part 4, sections 4</a> and <a href="08-part-harness-and-metrics.html#s6">6</a>). Line 84 clears out anything the old attempt still holds, so it can't hand its locks to the new one.</p>
       <div class="worked">
         <span class="box-label">Worked example · file number ≠ runtime ID</span>
-        <p>IDs come from <code>nextTxnId++</code> in the order threads pass the barrier, not from the <code>START T&lt;n&gt;</code> number in the file. In one audit run of <code>tests/test.txt</code>, file transaction T314 ran as ID 985, T525 as 957 and T916 as 958 (from the <code>TxnNum</code>/<code>TxnID</code> columns of <code>transaction_metrics.txt</code>). Logs use runtime IDs, so tracing a file transaction through a log needs this mapping first.</p>
+        <p>In the text harness, IDs come from <code>nextTxnId++</code> in the order threads get past the start barrier, not from the <code>START T&lt;n&gt;</code> number in the file. In one pre-fix audit run of <code>tests/test.txt</code>, file transaction T314 ran as ID 985, T525 as 957 and T916 as 958, per the <code>TxnNum</code>/<code>TxnID</code> columns of <code>transaction_metrics.txt</code>. That assignment code hasn't changed. Logs use runtime IDs, so tracing a file transaction through a log needs this mapping first.</p>
       </div>
     </section>
 
     <section>
       <h2 id="s5">5. acquireLock: the phase check, then delegation</h2>
-<pre><code>// src/concurrency_manager.cpp:116-147 (abridged)
-Transaction* txn;
+<pre><code>// src/concurrency_manager.cpp:121-152 (abridged)
+std::shared_ptr&lt;Transaction&gt; txn;
 {   std::lock_guard&lt;std::mutex&gt; lock(mtx);
     txn = getTransaction(txnId);
     if (!txn) return false;
     if (txn-&gt;getState() != TransactionState::GROWING) return false;   // 2PL
 }
-bool acquired = lockManager.acquireLock(txnId, resourceId, lockType, wait);
+bool acquired = lockManager.acquireLock(txnId, resourceId, lockType, wait);   // may sleep
 if (acquired) txn-&gt;acquireLock(resourceId);
 return acquired;</code></pre>
-      <div class="callout impl">
-        <span class="box-label">In the code · a raw pointer outlives its mutex</span>
-        <p><code>txn</code> is read under <code>ConcurrencyManager::mtx</code> and used after the mutex is released, possibly after a long wait inside <code>lockManager.acquireLock</code>. Only the owning thread erases its own transaction (on commit, abort or restart), so in the harness that pointer stays alive. But the detector's <code>txn-&gt;abort()</code> and the harness's lookup race on <code>state</code> (section 3), and any second caller that aborted this ID would leave <code>txn</code> dangling (page 2, section 7).</p>
+      <p>The phase check happens under <code>ConcurrencyManager</code>'s mutex. The possibly long wait inside <code>LockManager</code> happens <em>without</em> it. If the facade held its mutex while waiting, one blocked transaction would stop every other transaction from beginning or committing (page 2, section 7).</p>
+      <p>The state check and the lock request are a check-then-act pair, so the detector can abort the transaction in between. <code>LockManager</code> re-checks under its own mutex (<code>src/lock_manager.cpp:320</code>), and its wait predicate checks again (<a href="06-part-lock-manager.html#s4">Part 2, section 4</a>). An aborted transaction is therefore never granted a lock once its <code>ABORTED</code> state is visible.</p>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · a raw pointer outliving its mutex</span>
+        <p><strong>Before:</strong> <code>Transaction* txn</code> was read under the mutex and used after it was released, possibly after a long wait. Any other thread erasing that transaction would have left it dangling. <strong>After:</strong> a <code>shared_ptr</code> copy, which keeps the object alive for as long as this call holds it.</p>
       </div>
     </section>
 
     <section>
       <h2 id="s6">6. Commit and abort, and which 2PL variant actually runs</h2>
-<pre><code>// src/concurrency_manager.cpp:175-233 (abridged)
-bool ConcurrencyManager::commitTransaction(int txnId) {
-    ... if (txn-&gt;commit()) { lockManager.releaseAllLocks(txnId); transactions.erase(txnId); }
-}
-bool ConcurrencyManager::abortTransaction(int txnId, const std::string&amp; reason) {
-    txn-&gt;abort(); lockManager.releaseAllLocks(txnId); transactions.erase(txnId); return true;
+<pre><code>// src/concurrency_manager.cpp:180-216 (abridged)
+bool ConcurrencyManager::commitTransaction(int txnId, const std::function&lt;void()&gt;&amp; beforeRelease) {
+    ... look up txn under mtx ...
+    bool committed = txn-&gt;commit();              // commit point: CAS to COMMITTED
+    if (committed) {
+        if (beforeRelease) beforeRelease();      // install buffered writes, all locks still held
+        lockManager.releaseAllLocks(txnId);      // then release every lock at once
+        Transaction::UnregisterTransaction(txnId, txn.get());  transactions.erase(txnId);
+    }
+    return committed;
 }</code></pre>
-      <p>Commit and abort each release <em>every</em> lock at once, at the end. The API also offers <code>releaseLock</code>, which the test language exposes as <code>RELEASE T&lt;n&gt;(item)</code>. Which variant runs therefore depends on the workload:</p>
+      <p>The order matters. The CAS comes first, so once a transaction's writes start being installed, the detector can no longer abort it (<code>abort()</code> returns <code>false</code> on a committed transaction). The writes are installed <em>before</em> any lock is released, so no other transaction can read an item until its new value is fully in place. The benchmark uses the <code>beforeRelease</code> hook for exactly this (<a href="08-part-harness-and-metrics.html#s6">Part 4, section 6</a>). <code>abortTransaction</code> (lines 218–250) does the same without the hook: CAS to <code>ABORTED</code>, release everything, unregister.</p>
+      <p>The API also offers <code>releaseLock</code>, which the text language exposes as <code>RELEASE T&lt;n&gt;(item)</code>. So which 2PL variant runs depends on the driver:</p>
       <div class="tbl-wrap">
       <table>
-        <caption>RELEASE operations in each test file</caption>
-        <thead><tr><th>File</th><th class="num">Transactions</th><th class="num">RELEASE lines</th><th>Locking behaviour</th></tr></thead>
+        <caption>Early releases in each driver</caption>
+        <thead><tr><th>Driver / file</th><th class="num">Transactions</th><th class="num">Early releases</th><th>Locking behaviour</th></tr></thead>
         <tbody>
-          <tr><td><code>tests/test.txt</code></td><td class="num">1,000</td><td class="num">0</td><td>all locks held to commit/abort*</td></tr>
-          <tr><td><code>tests/dead_test.txt</code></td><td class="num">1,000</td><td class="num">0</td><td>all locks held to commit/abort</td></tr>
-          <tr><td><code>test1/4/5/6.txt</code></td><td class="num">2–3</td><td class="num">0</td><td>all locks held to commit/abort*</td></tr>
+          <tr><td><code>tests/test.txt</code></td><td class="num">1,000</td><td class="num">0 RELEASE lines</td><td>every lock held to commit/abort</td></tr>
+          <tr><td><code>tests/dead_test.txt</code></td><td class="num">1,000</td><td class="num">0</td><td>every lock held to commit/abort</td></tr>
+          <tr><td><code>test1/4/5/6.txt</code></td><td class="num">2–3</td><td class="num">0</td><td>every lock held to commit/abort</td></tr>
+          <tr><td><code>tests/benchmark.cpp</code></td><td class="num">1,000–2,000</td><td class="num">never calls <code>releaseLock</code></td><td>every lock held to commit/abort</td></tr>
         </tbody>
       </table>
       </div>
-      <p>So in every measured run the intended behaviour is <em>rigorous</em> 2PL, which is "strict 2PL" in the docs' naming (page 3, section 7). The asterisk: when a transaction upgrades S→X and has to wait, the lock manager drops the S lock first (<a href="06-part-lock-manager.html#s6">Part 2, section 6</a>). That's a release before commit, followed by an acquisition, so it isn't 2PL of any variant for that transaction. The project's own README describes it as "Basic Two-Phase Locking (2PL) protocol (not strict 2PL)", which is true of the API, since <code>RELEASE</code> allows early release.</p>
+      <p>So on every measured workload the behaviour is <em>rigorous</em> 2PL: shared and exclusive locks are both held until commit or abort (page 3, section 7). The project's docs call this "strict 2PL", as several textbooks do. Rigorous implies strict, so "strict 2PL" is accurate under either naming. The API alone is only basic 2PL, because <code>releaseLock</code> allows an early release. Before commit 47e3a19, a waiting S→X upgrade also gave up its S lock mid-transaction, which broke 2PL for that transaction. <a href="06-part-lock-manager.html#s6">Part 2, section 6</a> covers that bug and its fix.</p>
     </section>
 
     <section>
-      <h2 id="s7">7. The constructor uses members that don't exist yet</h2>
-<pre><code>// include/concurrency_manager.h:20-40 — declaration order decides construction order
-class ConcurrencyManager {
-    LockManager lockManager;                            // 1st: constructed first
-    Logger logger;                                      // 2nd
-    std::unique_ptr&lt;DeadlockDetector&gt; deadlockDetector; // 3rd
-    ResourceAllocationGraph rag;                        // 4th
-    ...
-// src/concurrency_manager.cpp:6-10 — the list order below is ignored
-ConcurrencyManager::ConcurrencyManager(...) : logger(logFilePath, false), rag(logger), lockManager(logger, rag), nextTxnId(1)</code></pre>
-      <p><code>lockManager</code> is built first, with references to <code>logger</code> and <code>rag</code>, which are still raw memory. Its constructor immediately runs <code>logger.info("Lock Manager initialized ...")</code>, which locks the unconstructed <code>Logger</code>'s mutex. That's the UB from page 2, section 9. Clang says so at compile time: <code>warning: field 'rag' will be initialized after field 'lockManager' [-Wreorder-ctor]</code>.</p>
-      <div class="callout result">
-        <span class="box-label">Result · audit build on macOS (Apple clang 17)</span>
-        <p><strong>Unmodified repo:</strong> every test file (<code>test1</code>, <code>test4</code>, <code>test5</code>, <code>test6</code>) exits with code 134 at startup: <code>libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument</code>.<br><strong>Same code, with only the member declarations reordered</strong> (logger, rag, then lockManager): all files run to completion.</p>
+      <h2 id="s7">7. Construction order: the startup crash</h2>
+<pre><code>// include/concurrency_manager.h:22-36 (current)
+// NOTE: members are constructed in declaration order, not initializer-list order.
+// logger must exist before rag, and both before lockManager, which logs and
+// stores references to them in its constructor.
+Logger logger;
+ResourceAllocationGraph rag;
+LockManager lockManager;
+std::unique_ptr&lt;DeadlockDetector&gt; deadlockDetector;</code></pre>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · members used before they existed</span>
+        <p><strong>Before:</strong> the declaration order was <code>lockManager</code>, <code>logger</code>, <code>deadlockDetector</code>, <code>rag</code>, while the initializer list said <code>logger(...), rag(logger), lockManager(logger, rag)</code>. C++ ignores the list order (page 2, section 9), so <code>lockManager</code> was built first, holding references to a <code>logger</code> and <code>rag</code> that were still raw memory. Its constructor immediately called <code>logger.info(...)</code>, which locked the unconstructed <code>Logger</code>'s mutex. Clang warned about it: <code>warning: field 'rag' will be initialized after field 'lockManager' [-Wreorder-ctor]</code>.</p>
+        <p><strong>Audit result (macOS, Apple clang 17):</strong> every test file exited with code 134 at startup: <code>libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument</code>. With only the declarations reordered, every file ran to completion.</p>
+        <p><strong>After:</strong> declarations reordered, with the NOTE comment above, and the makefile now builds with <code>-Wall -Wextra</code>. The <code>make test</code> run recorded on the fix branch (2026-09-11) built and ran every test target.</p>
       </div>
-      <p><strong>What this supports.</strong> The bug is real and deterministic on macOS. Because the global <code>cm</code> is zero-filled before construction and glibc's unlocked mutex is all zeros, the original build most likely ran on Linux by luck. I couldn't test Linux, so that last point is an inference. <strong>What it doesn't.</strong> Even where it runs, the program's behaviour is undefined, and <code>docs/09</code> and <code>docs/14</code> are wrong to state that construction order is <code>logger</code> → <code>rag</code> → <code>lockManager</code>.</p>
-      <div class="callout impl">
-        <span class="box-label">In the code · every later number on these pages uses the reordered build</span>
-        <p>All runs in Parts 2–4 and the results page used a scratch copy with exactly this one change. The serial baseline additionally joins each thread right after starting it. The repository itself was not modified.</p>
-      </div>
+      <p>The original author most likely ran on Linux, where a zero-filled global mutex happens to look unlocked (page 2, section 9). That's an inference, because Linux wasn't tested. Either way, the program's behaviour was undefined until this fix. <code>docs/09</code> and <code>docs/14</code> describe the intended order (<code>logger</code> → <code>rag</code> → <code>lockManager</code>), which the code now actually follows.</p>
     </section>
 
     <section>
       <h2 id="s8">8. What the facade doesn't provide</h2>
       <ul>
-        <li><strong>No data.</strong> A "read" is a shared lock and a "write" is an exclusive lock. No value is stored, read or changed (page 1, section 2).</li>
-        <li><strong>No atomicity or durability machinery.</strong> Abort releases locks and sets a flag. There's no undo, redo or write-ahead log.</li>
-        <li><strong>No isolation test.</strong> No test in the repo checks that the resulting schedules are serializable. The audit's log replay is described in <a href="06-part-lock-manager.html#s6">Part 2, section 6</a>.</li>
-        <li><strong>An unimplemented method.</strong> <code>checkForDeadlocks()</code> is declared and called by <code>src/2pl_test_runner.cpp</code> but never defined, so that runner doesn't link.</li>
+        <li><strong>No data inside the engine.</strong> A "read" is a shared lock and a "write" is an exclusive lock. The engine stores no values. The benchmark harness keeps one integer per item and buffers each transaction's writes until commit (<a href="08-part-harness-and-metrics.html#s6">Part 4, section 6</a>). That's all-or-nothing installation in memory, done by the harness, not the engine.</li>
+        <li><strong>No durability.</strong> There's no undo log, redo log or write-ahead log, and nothing is written to disk that recovery could replay. The <code>.log</code> files are human-readable traces. A crash loses every in-flight and committed effect (page 1, section 2).</li>
+        <li><strong>No consistency rules.</strong> The engine enforces no constraints. That's the application's job.</li>
+        <li><strong>No phantom protection.</strong> Locks are taken on item IDs. A <em class="term">phantom</em> is a row that appears when a transaction repeats a range query ("all items with value &gt; 10") because another transaction inserted it in between. Item locks can't prevent that, because the new item didn't exist to be locked. Real systems use predicate, range or next-key locks. Every workload here uses a fixed set of item IDs, so the question never comes up in the measurements.</li>
+        <li><strong>Isolation tests do exist now:</strong> <code>tests/test_correctness.cpp</code> (16 checks, all passing in the <code>make test</code> run recorded on 2026-09-11) and the benchmark's per-run serializability and lost-update checks (<a href="08-part-harness-and-metrics.html#s7">Part 4, section 7</a>).</li>
       </ul>
     </section>
 
-    <div class="recap"><span class="box-label">Carried forward</span>the component map (§1) · the Transaction state machine, its priority, and the unreliable <code>locksHeld</code> mirror (§2) · the unlatched static registry and racing <code>state</code> (§3) · restart under the same ID, and runtime ID ≠ file number (§4) · the 2PL check in <code>acquireLock</code> (§5) · release-all at commit/abort: rigorous 2PL on every measured file except upgrade waits (§6) · the declaration-order crash, and that all measurements use the reordered build (§7) · no data, undo, log or isolation test (§8).</div>
+    <div class="recap"><span class="box-label">Carried forward</span>the component map and the two drivers (§1) · the state machine, CAS-based commit/abort, and priority for victims only (§2) · the latched <code>shared_ptr</code> registry, leaf lock, and that an ID doesn't identify one attempt (§3) · restart under the same ID, with its pre-release at line 84 (§4) · the phase check, then the wait without the facade mutex (§5) · the commit point, then install, then release: rigorous 2PL on every measured workload (§6) · the declaration-order crash and its fix (§7) · no durability, constraints or phantom protection; the isolation tests (§8).</div>
   </main>
   <div class="pager">
     <a href="04-deadlocks-and-wait-for-graphs.html"><span class="lbl">Back</span>← Deadlocks and wait-for graphs</a>

@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>3 · Throughput and commit rate · Interview Prep</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="qa.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Interview prep</a><span class="sep">/</span><span class="here">3 · Throughput and commit rate</span></div>
+    <span class="stage-tag">18 questions · T1–T18</span>
+    <h1 class="title">"Achieved a 6x throughput speedup over single-threaded baseline, sustaining a 100% transaction commit rate under high contention"</h1>
+    <p class="dek">Performance claims get the hardest follow-ups: what the baseline was, how you measured, where the 6× came from, why some workloads got slower, what "high contention" means in numbers, and what a 100% commit rate costs when it's achieved by retrying. The recorded numbers are on this page. Know them cold, and know which ones don't support the bullet.</p>
+  </header>
+  <main>
+
+    <nav class="qindex" aria-label="Questions on this page">
+      <h2>Questions</h2>
+      <div class="group">Measuring throughput</div>
+      <ul>
+        <li><a href="#t1"><span class="qn">T1</span>How did you measure throughput and speedup?</a></li>
+        <li><a href="#t2"><span class="qn">T2</span>What exactly is the single-threaded baseline?</a></li>
+        <li><a href="#t3"><span class="qn">T3</span>Where does "6x" come from?</a></li>
+        <li><a href="#t4"><span class="qn">T4</span>Why the I/O workload scales almost linearly</a></li>
+        <li><a href="#t5"><span class="qn">T5</span>Why CPU-only gets slower with threads</a></li>
+        <li><a href="#t6"><span class="qn">T6</span>Why 1,000 threads is slower than 64</a></li>
+        <li><a href="#t7"><span class="qn">T7</span>High contention, and thrashing</a></li>
+        <li><a href="#t8"><span class="qn">T8</span>Choosing the thread count</a></li>
+        <li><a href="#t9"><span class="qn">T9</span>How noisy are the numbers?</a></li>
+        <li><a href="#t10"><span class="qn">T10</span>Pitfalls of simulating I/O with sleep</a></li>
+        <li><a href="#t11"><span class="qn">T11</span>Are pre-fix and post-fix numbers comparable?</a></li>
+      </ul>
+      <div class="group">Commit rate under contention</div>
+      <ul>
+        <li><a href="#t12"><span class="qn">T12</span>What "100% commit rate" means</a></li>
+        <li><a href="#t13"><span class="qn">T13</span>"High contention" in numbers</a></li>
+        <li><a href="#t14"><span class="qn">T14</span>What 100% commit cost</a></li>
+        <li><a href="#t15"><span class="qn">T15</span>Exponential backoff with jitter</a></li>
+        <li><a href="#t16"><span class="qn">T16</span>Livelock: did you see it?</a></li>
+        <li><a href="#t17"><span class="qn">T17</span>Reducing aborts under contention</a></li>
+        <li><a href="#t18"><span class="qn">T18</span>Throughput vs latency</a></li>
+      </ul>
+    </nav>
+
+    <button class="reveal-all" type="button">Show all answers</button>
+
+    <section class="qa-section">
+      <h2>Measuring throughput</h2>
+
+      <article class="qa" id="t1">
+        <div class="qa-id">T1</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Throughput:</strong> committed transactions per second.</li>
+            <li><strong>Speedup:</strong> \(S(T) = \dfrac{\text{throughput with } T \text{ threads}}{\text{throughput with 1 thread}}\). <strong>Parallel efficiency:</strong> \(E(T) = S(T)/T\), where 1.0 means every thread contributed fully.</li>
+            <li><strong>Median of runs:</strong> the middle value of repeated runs, which is less sensitive to one outlier than the mean.</li>
+            <li><strong>Fixed seed:</strong> a random generator started from a fixed value produces the same "random" workload every time.</li>
+          </ul>
+        </div>
+        <h3 class="q">How did you measure throughput and speedup?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Benchmark methodology: is the comparison controlled, repeated, and clearly defined?</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>A dedicated benchmark runs one fixed workload at several thread counts in the same binary, repeats each point 5 times, and reports the median, plus min–max and aborts.</strong></p>
+          <ul>
+            <li><strong>Workload:</strong> N transactions of 4 operations each, generated once from a Mersenne Twister with seed 42. Each operation picks an item uniformly and is a write with a set probability. Optionally, each operation sleeps while holding its lock, to simulate I/O.</li>
+            <li><strong>Execution:</strong> a pool of T workers pulls the next transaction index from an atomic counter. The clock starts when a latch releases the already-created workers and stops when the last one joins.</li>
+            <li><strong>Metrics:</strong> throughput = commits ÷ seconds per run. Speedup = median at T ÷ median at 1 thread.</li>
+            <li><strong>Correctness:</strong> every run is also checked for serializability and lost updates, so a fast but wrong run can't count.</li>
+          </ul>
+          <p><strong>Three configurations:</strong></p>
+          <ul>
+            <li>A: CPU-only, 2,000 transactions, 1,000 items, 20% writes.</li>
+            <li>B: 1 ms per operation, 1,000 items, 20% writes.</li>
+            <li>C: 1 ms per operation, 20 items, 30% writes.</li>
+          </ul>
+          <p>Run on an 8-core Apple M3, built at <code>-O2</code>, with a 10 ms deadlock-detection interval.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/08-part-harness-and-metrics.html#s6">Part 4, section 6</a></p>
+      </article>
+
+      <article class="qa" id="t2">
+        <div class="qa-id">T2</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>A <strong>fair baseline</strong> changes only the variable you're studying, here the number of threads, and keeps code, workload, compiler flags, machine and measurement identical. A <strong>strong baseline</strong> is the best reasonable alternative. For concurrency control, that's often a version with no locking at all, because a single thread doesn't need locks.</p>
+        </div>
+        <h3 class="q">What exactly is your "single-threaded baseline"? Is it a fair one?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether the speedup is inflated by a weak or different baseline.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>It's the same benchmark binary with one worker thread: the same workload, engine, flags and machine. So it's fair for the question "how does this engine scale with threads?"</strong></p>
+          <p>It is <em>not</em> the strongest possible baseline. The single worker still goes through the full lock manager (a mutex acquisition, table updates and log-string building for every operation), and the deadlock detector thread still wakes every 10 ms. A purpose-built serial executor with no locking would be faster, especially on the CPU-only workload, and would make every speedup smaller. I didn't build one.</p>
+          <p>History: the original project had no baseline at all. When I first built one for the old text harness (the same program, joining each thread right after starting it), serial was <em>faster</em> than 1,000 concurrent threads, by 16.8× to 72.9×.</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>Say <em>"compared with the same engine running one worker thread"</em>. Don't call it an "optimized single-threaded implementation".</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s8">Results, section 8</a></p>
+      </article>
+
+      <article class="qa" id="t3">
+        <div class="qa-id">T3</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>A speedup figure is meaningless without its conditions: work per operation, contention (how often transactions touch the same items), thread count, and hardware. The same engine can go from far above 1× to far below it just by changing the workload.</p>
+        </div>
+        <h3 class="q">Where does the "6x throughput speedup" on your CV come from?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether a headline number traces to a real, reproducible measurement.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Honestly, there's no recorded run in the project that produces 6× as a result, so I wouldn't quote it. Here is what I did measure, with conditions.</strong></p>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Workload</th><th>Best point</th><th>Other points</th></tr></thead>
+            <tbody>
+              <tr><td>B: 1 ms I/O per op, 1,000 items</td><td class="num">53.74× at 64 threads</td><td>7.97× at 8 threads (the core count); 13.98× at 1,000 threads</td></tr>
+              <tr><td>C: 1 ms I/O per op, 20 items (high contention)</td><td class="num">2.83× at 4 threads</td><td>2.73× at 8; 0.25× at 64</td></tr>
+              <tr><td>A: no work per op</td><td class="num">1.00× (1 thread is best)</td><td>0.63× at 2; 0.24× at 32</td></tr>
+              <tr><td>Original text harness, pre-fix</td><td>serial faster</td><td>1,000 threads 16.8–72.9× <em>slower</em> than serial</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>So the honest summary is: <em>"near-linear scaling when transactions wait on I/O and rarely conflict (7.97× on 8 cores, 53.74× at 64 threads), no gain when they don't wait, and collapse under heavy contention."</em></p>
+          <p>The number that pairs with "high contention" in the same bullet is 2.83×, at 4 threads.</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>Never invent how a number was measured. If 6× came from an earlier informal run you can't reproduce, say exactly that, then give the measured table. Also, these benchmark numbers come from the September 2026 rework, not the 2025 course version. Also, "6× speedup … under high contention" can't be combined with your data: under high contention the best result was 2.83×.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s2">Results, sections 2–3</a></p>
+      </article>
+
+      <article class="qa" id="t4">
+        <div class="qa-id">T4</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>I/O-bound vs CPU-bound:</strong> an I/O-bound task spends most of its time waiting, and a waiting thread doesn't use a core.</li>
+            <li><strong>Contention:</strong> how often concurrent transactions need the same item in incompatible modes, which forces waits.</li>
+            <li>Efficiency \(E(T) = S(T)/T\) from T1.</li>
+          </ul>
+        </div>
+        <h3 class="q">Walk me through the low-contention I/O results. Why does throughput scale almost linearly, even past 8 cores?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Interpreting a scaling curve from first principles.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th class="num">Threads</th><th class="num">1</th><th class="num">2</th><th class="num">4</th><th class="num">8</th><th class="num">16</th><th class="num">32</th><th class="num">64</th></tr></thead>
+            <tbody>
+              <tr><td>txn/s (median)</td><td class="num">191.2</td><td class="num">384.6</td><td class="num">767.2</td><td class="num">1,523.2</td><td class="num">2,977.2</td><td class="num">5,466.4</td><td class="num">10,273.0</td></tr>
+              <tr><td>speedup</td><td class="num">1.00</td><td class="num">2.01</td><td class="num">4.01</td><td class="num">7.97</td><td class="num">15.58</td><td class="num">28.60</td><td class="num">53.74</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p><strong>Two conditions make it scale.</strong></p>
+          <p><strong>First, the work is waiting.</strong> Each transaction spends about 4 ms asleep in simulated I/O and only a few microseconds in the lock manager. Sleeping threads don't compete for cores, so 64 threads on 8 cores still run nearly in parallel. The serial run shows the ratio: 1,000 transactions × 4 ms is 4.0 s of sleep, against about 5.23 s total.</p>
+          <p><strong>Second, conflicts are rare.</strong> With 1,000 items and 4 operations, two transactions share an item with probability about \(1 - (1 - 4/1000)^4 \approx 1.6\%\). At 64 threads, each transaction overlaps with about \(63 \times 0.0159 \approx 1\) other, so waits are short and there were zero deadlock aborts.</p>
+          <p><strong>Efficiency:</strong> \(E(8) = 7.97/8 = 0.996\), and \(E(64) = 53.74/64 = 0.84\). The 16% loss at 64 threads is the single global mutex, wakeups and occasional waits starting to show.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s3">Results, sections 3–4</a> · <a href="../explanations/08-part-harness-and-metrics.html#s8">Part 4, section 8</a></p>
+      </article>
+
+      <article class="qa" id="t5">
+        <div class="qa-id">T5</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Amdahl's law:</strong> if a fraction \(p\) of the work can run in parallel on \(N\) processors, the maximum speedup is \(S(N) = \dfrac{1}{(1 - p) + p/N}\).</li>
+            <li><strong>Critical section:</strong> code under a mutex runs one thread at a time, so it counts as serial.</li>
+            <li><strong>Contention overhead:</strong> when threads fight for a mutex, they pay for failed attempts, sleeping, waking and context switches, so the result can be slower than serial.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why did your CPU-only benchmark get slower as you added threads?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Amdahl's law, and the difference between "doesn't speed up" and "slows down".</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Measured:</strong> 333,625 txn/s on 1 thread, then 0.63× at 2 threads, 0.43× at 4, 0.34× at 8, 0.28× at 16 and 0.24× at 32.</p>
+          <p><strong>Why.</strong> With no simulated I/O, a transaction is four lock-manager calls. Nearly all of its time is inside the one lock-table mutex, so the parallel fraction \(p\) is close to 0. Amdahl's law then caps speedup at about 1×. For contrast, even \(p = 0.9\) on 8 cores gives only \(1/(0.1 + 0.9/8) = 1/0.2125 = 4.7\times\).</p>
+          <p>Getting <em>slower</em> than 1× comes from overhead Amdahl ignores. Threads collide on the mutex and have to be put to sleep and woken. Each release calls <code>notify_all</code>, waking every waiter. And the mutex's memory bounces between cores' caches. A single thread pays none of that.</p>
+          <p><strong>Caveat on the baseline:</strong> the five single-thread runs rose steadily from 263k to 375k txn/s, which looks like warm-up, so the 1× reference is noisy. Even against the slowest serial run, 32 threads reached only \(79{,}181 / 263{,}431 = 0.30\times\).</p>
+          <p><strong>Lesson:</strong> this is the curve that measures the lock manager itself, and it doesn't scale. That's what motivates striping the table and targeted wakeups (S21).</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s4">Results, section 4</a> · <a href="../explanations/09-results-and-takeaways.html#s9">section 9</a></p>
+      </article>
+
+      <article class="qa" id="t6">
+        <div class="qa-id">T6</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Oversubscription</strong> (more runnable threads than cores) and <strong>thread wake-up latency</strong>.</li>
+            <li>In the benchmark, T workers share N transactions. At T = N = 1,000, each worker runs about one transaction and then exits.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why was throughput at 1,000 threads lower than at 64 threads?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Recognizing when "more threads" changes the regime.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Measured:</strong> 2,671.8 txn/s median (13.98×) at 1,000 threads, against 10,273.0 (53.74×) at 64. The spread across runs was 2,220 to 3,004, and 45 aborts per run on average, against zero at 64 threads.</p>
+          <p><strong>Why:</strong></p>
+          <ul>
+            <li>With 1,000 threads for 1,000 transactions, nothing is reused. The run is dominated by getting 1,000 threads scheduled on 8 cores, and each takes its turn to wake from the latch, grab the global mutex and get through its critical sections.</li>
+            <li>Mutex convoys: many runnable threads queue on the one lock-table mutex, and every release wakes a crowd.</li>
+            <li>More simultaneous transactions means more chance of overlap, so deadlocks appeared (45 aborts), each costing a restart and backoff.</li>
+            <li>Timing windows widened enough to break correctness: 2 of 5 runs failed serializability (S12).</li>
+          </ul>
+          <p>So past some point, threads stop adding parallel waiting and start adding scheduling and coordination cost. For this workload the best measured point was 64. I didn't test between 64 and 1,000.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s4">Results, section 4</a></p>
+      </article>
+
+      <article class="qa" id="t7">
+        <div class="qa-id">T7</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Abort (restart):</strong> all the work a transaction did so far is thrown away.</li>
+            <li><strong>Data-contention thrashing:</strong> past a certain level of concurrency, adding transactions increases blocking and aborts so much that <em>total</em> throughput falls.</li>
+          </ul>
+        </div>
+        <h3 class="q">What happened to throughput under high contention? Explain the shape of the curve.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Understanding thrashing with real numbers.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th class="num">Threads</th><th class="num">1</th><th class="num">2</th><th class="num">4</th><th class="num">8</th><th class="num">16</th><th class="num">32</th><th class="num">64</th></tr></thead>
+            <tbody>
+              <tr><td>txn/s</td><td class="num">192.3</td><td class="num">342.7</td><td class="num">543.6</td><td class="num">525.7</td><td class="num">253.2</td><td class="num">104.5</td><td class="num">47.9</td></tr>
+              <tr><td>speedup</td><td class="num">1.00</td><td class="num">1.78</td><td class="num">2.83</td><td class="num">2.73</td><td class="num">1.32</td><td class="num">0.54</td><td class="num">0.25</td></tr>
+              <tr><td>aborts / run</td><td class="num">0</td><td class="num">8</td><td class="num">23</td><td class="num">96</td><td class="num">433</td><td class="num">1,479</td><td class="num">3,844</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>Config C: 1,000 transactions, 20 items, 30% writes, 1 ms per operation. Every run was serializable.</p>
+          <p><strong>Rise, peak, collapse.</strong> With 20 items, two transactions share an item with probability about \(1 - 0.8^4 = 59\%\). At 2–4 threads, most operations still proceed and waiting I/O is shared, so throughput rises. By 8 threads, waits chain behind lock holders who are themselves sleeping 1 ms per operation, and deadlocks multiply. At 64 threads, each transaction overlaps with about \(63 \times 0.59 \approx 37\) others. The result was 3,844 aborts for 1,000 commits: about 79% of attempts wasted, each throwing away up to 4 ms of work plus backoff.</p>
+          <p>That's data-contention thrashing: the system spends more effort on conflict than on work. Aborts grew roughly 2.6–4.5× per doubling of threads, faster than throughput could.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s10">Page 4, section 10</a> · <a href="../explanations/09-results-and-takeaways.html#s4">Results, section 4</a></p>
+      </article>
+
+      <article class="qa" id="t8">
+        <div class="qa-id">T8</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Admission control:</strong> cap how many transactions run at once, and queue the rest.</li>
+            <li><strong>AIMD (additive increase, multiplicative decrease):</strong> the feedback rule TCP uses. Grow slowly while things are healthy, and cut sharply when a congestion signal appears.</li>
+            <li><strong>Abort share</strong> = aborts ÷ (aborts + commits).</li>
+          </ul>
+        </div>
+        <h3 class="q">Given those curves, how would you choose the number of concurrent transactions in production?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Turning measurements into an operational policy.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Cap concurrency near the measured peak for the workload, and in production, adapt it with feedback, because contention changes over time.</strong></p>
+          <ul>
+            <li><strong>Static:</strong> from my data, the high-contention workload should run with 4–8 concurrent transactions (2.83× and 2.73×), while the low-contention I/O workload kept improving to 64. Extra requests wait in a queue instead of joining the fight for locks.</li>
+            <li><strong>Adaptive:</strong> track throughput and abort share over a window. Add one concurrency slot at a time while throughput rises. When the abort share jumps, cut the limit, say by half. The signal is strong: abort share was \(23/1{,}023 = 2.2\%\) at 4 threads but \(3{,}844/4{,}844 = 79.4\%\) at 64.</li>
+            <li><strong>CPU-bound portions:</strong> keep runnable threads near the core count. The CPU-only workload was fastest at 1.</li>
+          </ul>
+          <p>Admission control fixes the symptom. Reducing lock hold times, or taking locks in order (T17), reduces the contention itself.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s6">Results, section 6</a></p>
+      </article>
+
+      <article class="qa" id="t9">
+        <div class="qa-id">T9</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Relative spread:</strong> (max − min) ÷ median across repeated runs.</li>
+            <li><strong>Warm-up:</strong> early runs are slower while caches, memory allocators and CPU frequency settle.</li>
+            <li>A difference is convincing when it's much larger than the run-to-run spread.</li>
+          </ul>
+        </div>
+        <h3 class="q">How noisy are your measurements? How do you know a speedup is real and not noise?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Measurement rigor.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p>Each point is 5 runs, and I report the median and the min–max range. Relative spreads:</p>
+          <ul>
+            <li>Low-contention I/O at 1 thread: \((191.53 - 190.61)/191.15 = 0.5\%\), very stable.</li>
+            <li>The same workload at 1,000 threads: \((3{,}004 - 2{,}220)/2{,}672 = 29\%\).</li>
+            <li>High contention at 64 threads: \((52.6 - 46.2)/47.9 = 13\%\).</li>
+            <li>CPU-only at 1 thread: 33%. The five runs rose monotonically, 263k → 306k → 334k → 359k → 375k, so that's warm-up rather than random noise.</li>
+          </ul>
+          <p><strong>Which conclusions survive the noise:</strong> 53.74× vs 1× at 0.5% spread is unambiguous. 2.83× vs 2.73× (4 vs 8 threads under high contention) is within noise: the 8-thread range 518.8–567.1 overlaps the 4-thread range 534.5–551.6. So I'd say "peaks around 4–8 threads", not "4 is best". The CPU-only baseline is the least trustworthy number, but even against its slowest run, 32 threads is 0.30×.</p>
+          <p><strong>What I'd improve:</strong> discard a warm-up run, run more repetitions, alternate thread counts in random order instead of running them in sequence, and report confidence intervals.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s9">Results, section 9</a></p>
+      </article>
+
+      <article class="qa" id="t10">
+        <div class="qa-id">T10</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Timer granularity:</strong> <code>sleep_for(1ms)</code> guarantees <em>at least</em> 1 ms, and the OS may wake the thread later.</li>
+            <li><strong>Real storage I/O</strong> queues at the device and competes for buffer-pool latches. A sleep competes for nothing.</li>
+          </ul>
+        </div>
+        <h3 class="q">You simulated I/O with a 1 ms sleep while holding locks. What are the pitfalls of that?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether you know how representative your benchmark is.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <ul>
+            <li><strong>It's a best case for concurrency.</strong> A sleeping thread uses no CPU and no shared device, so 64 sleepers really can run in parallel. Real disk or network I/O has limited parallelism, queueing, and contention on buffers and log flushes, so 53.74× is an optimistic upper bound for that workload shape.</li>
+            <li><strong>Sleeps overshoot.</strong> The serial run took 5.22–5.25 s for 4.0 s of requested sleep. For run 0, \(5.2269 - 4.0 = 1.23\) s over 1,000 transactions is 1.23 ms per transaction of overhead, part of it sleeps overshooting and part the engine. I didn't separate the two.</li>
+            <li><strong>Holding locks during the sleep is a deliberate choice.</strong> It models transactions that do slow work mid-transaction, which is the case where lock hold time hurts. Doing the I/O before taking locks would give very different contention results.</li>
+            <li><strong>No CPU work per operation,</strong> so it doesn't model query execution, and it hides the CPU-side bottleneck that the CPU-only workload exposes.</li>
+          </ul>
+          <p>So I present the I/O results as <em>"scaling when transactions spend most of their time waiting"</em>, and always pair them with the CPU-only and high-contention results.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/08-part-harness-and-metrics.html#s6">Part 4, section 6</a></p>
+      </article>
+
+      <article class="qa" id="t11">
+        <div class="qa-id">T11</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>A <strong>confound</strong> is a second difference between two measurements that could explain the result instead of the variable you care about. Two numbers are comparable only when the harness, workload, build flags, logging and hardware are the same.</p>
+        </div>
+        <h3 class="q">Your original harness showed concurrent execution much slower than serial, and your new benchmark shows big speedups. Can you compare those?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Recognizing confounded comparisons, and not cherry-picking.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>No. Almost everything differs between them.</strong></p>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th></th><th>Pre-fix text harness</th><th>Post-fix benchmark</th></tr></thead>
+            <tbody>
+              <tr><td>Engine</td><td>old code (upgrade gap, tail victims)</td><td>fixed</td></tr>
+              <tr><td>Workload</td><td>1,000 threads released at once, no work per op, 12–26 items</td><td>thread pool, optional 1 ms per op, 20 or 1,000 items</td></tr>
+              <tr><td>Build</td><td><code>-O0</code></td><td><code>-O2</code></td></tr>
+              <tr><td>Logging</td><td>engine at INFO, plus the whole resource graph written to a file after every operation</td><td>WARNING only, no graph writes</td></tr>
+              <tr><td>Detection / backoff</td><td>100 ms; backoff 56 ms up to 6.45 s</td><td>10 ms; backoff 1.4 ms up to 129 ms</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>The old measurement (107 vs 1,802 txn/s on <code>test.txt</code>, serial 16.8× faster) is fair <em>within</em> that harness. Its lesson is that with no work to parallelize, seconds of backoff and file I/O inside critical sections, 1,000 threads can't win. The new benchmark answers a different question. I don't present one as an improvement over the other. If I wanted a before/after for the fix alone, I'd run the new benchmark against the old engine, which the benchmark supports with a compile flag.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s7">Results, sections 7–8</a></p>
+      </article>
+    </section>
+
+    <section class="qa-section">
+      <h2>Commit rate under contention</h2>
+
+      <article class="qa" id="t12">
+        <div class="qa-id">T12</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Eventual commit rate:</strong> the fraction of transactions that commit at some point, counting all retries.</li>
+            <li><strong>Per-attempt success rate:</strong> commits ÷ (commits + aborts). Every abort-and-retry counts as a failed attempt.</li>
+            <li><strong>Retry loop:</strong> an aborted transaction restarts until it commits.</li>
+          </ul>
+        </div>
+        <h3 class="q">What does "100% transaction commit rate" mean in your system, and how is it achieved?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether the metric measures the engine, or is guaranteed by the harness.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>It means every transaction eventually committed, and that's guaranteed by the retry loop, not earned by the engine.</strong> Both harnesses restart an aborted transaction, with backoff, until it commits, and a benchmark run can't finish unless every transaction has committed. So in every completed run the eventual commit rate is 100% by construction.</p>
+          <p>The informative numbers are the per-attempt ones:</p>
+          <ul>
+            <li>High contention at 4 threads: 23 aborts per 1,000 commits, so 2.2% of attempts wasted.</li>
+            <li>High contention at 64 threads: 3,844 aborts, so \(3{,}844 / 4{,}844 = 79.4\%\) of attempts wasted.</li>
+            <li>Original harness on the deadlock-heavy file (pre-fix): 6,701 restarts for 1,000 commits. Its own "Transaction Success Rate" metric printed 13.0%.</li>
+            <li>High contention at 1,000 threads: the run didn't complete in usable time, about 6 hours for run 0.</li>
+          </ul>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>"100% commit rate under high contention" invites the question <em>"how many aborts?"</em>, and the answer undoes the claim. Say instead: <em>"every transaction eventually committed through detection and restart; under heavy contention that cost up to 3.8 aborts per commit at 64 threads, which is why throughput peaked at 4–8 threads."</em></p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/09-results-and-takeaways.html#s6">Results, section 6</a> · <a href="../explanations/08-part-harness-and-metrics.html#s5">Part 4, section 5</a></p>
+      </article>
+
+      <article class="qa" id="t13">
+        <div class="qa-id">T13</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>If transaction A touches 4 distinct items out of \(n\), and transaction B makes 4 independent uniform picks, the chance B misses all of A's items is \((1 - 4/n)^4\). So the chance they <strong>share at least one item</strong> is about \(1 - (1 - 4/n)^4\). That's an upper bound on actually conflicting, because two reads of the same item don't conflict.</p>
+        </div>
+        <h3 class="q">What does "high contention" mean quantitatively in your experiments?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether "high contention" is defined, or just a label.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          \[ P(\text{share an item}) \approx 1 - \Big(1 - \frac{4}{n}\Big)^{4} \]
+          <p><strong>Low contention, \(n = 1{,}000\):</strong> \(1 - 0.996^4 = 1 - 0.9841 = 0.0159\), about 1.6%. At 64 threads, each transaction overlaps about \(63 \times 0.0159 \approx 1.0\) others.</p>
+          <p><strong>High contention, \(n = 20\):</strong> \(1 - 0.8^4 = 1 - 0.4096 = 0.5904\), about 59%, with 30% writes. At 64 threads, about \(63 \times 0.59 \approx 37\) others.</p>
+          <p>The original deadlock-heavy file was contention by construction. Batches of 10 transactions over 3 items, half reading K then writing J and half reading J then writing K, so once each holds its first S lock, every odd transaction waits on every even one. That's a complete bipartite wait graph with 50 edges, drawing on a pool of just 12 items.</p>
+          <p>So when I say "high contention", I mean the 20-item configuration: more than half of all transaction pairs touch a common item.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/08-part-harness-and-metrics.html#s3">Part 4, sections 3</a> and <a href="../explanations/08-part-harness-and-metrics.html#s8">8</a></p>
+      </article>
+
+      <article class="qa" id="t14">
+        <div class="qa-id">T14</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Latency:</strong> time from a transaction's first start to its commit, including waits, restarts and backoff sleeps.</li>
+            <li><strong>Tail latency:</strong> the slowest transactions (max, p99), which is what users notice.</li>
+          </ul>
+        </div>
+        <h3 class="q">What did the 100% commit rate cost in wasted work and latency?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether you look past the headline metric at its cost.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <ul>
+            <li><strong>Wasted work in the benchmark:</strong> at 64 threads under high contention, 3,844 aborted attempts for 1,000 commits. Each aborted attempt may already have done up to 4 ms of simulated I/O while holding locks, which also blocked others.</li>
+            <li><strong>Latency in the original harness</strong> (pre-fix, deadlock-heavy file): average 25,087 ms from first start to commit, maximum 33,909 ms, for transactions that do three lock operations. No transaction committed with fewer than 5 restarts, and most needed 6–8. Backoff alone explains much of it: base sleeps of 80, 160, 320, 640, 1,280, 2,560 and 5,000 ms sum to 10,040 ms after 7 restarts, before any lock waits.</li>
+            <li><strong>Extreme case:</strong> high contention at 1,000 threads. About 6 hours and 220,943 aborts to commit 1,000 transactions, and one transaction was aborted 1,980 times.</li>
+          </ul>
+          <p>The benchmark measured throughput, not per-transaction latency, so I can't quote p99 for the fixed engine. That's a gap I'd close (T18).</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/08-part-harness-and-metrics.html#s5">Part 4, section 5</a> · <a href="../explanations/07-part-deadlock-detector.html#s7">Part 3, section 7</a></p>
+      </article>
+
+      <article class="qa" id="t15">
+        <div class="qa-id">T15</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Exponential backoff:</strong> after the k-th failure, wait roughly \(b \cdot 2^k\), up to a cap.</li>
+            <li><strong>Jitter:</strong> random variation in the wait, so that transactions which failed together don't all retry at the same moment.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why do you restart aborted transactions with exponential backoff and jitter? What are the actual formulas?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Retry design, and the trade-off between latency and repeated collisions.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>An immediate restart recreates the same conflict with the same transactions, so they deadlock again.</strong> Waiting longer as failures repeat reduces pressure while contention lasts, and randomness spreads out retries so they don't re-collide in lockstep.</p>
+          <p><strong>Benchmark:</strong></p>
+          \[ b_k = \min\big(1000 \cdot 2^{k},\ 100{,}000\big) \cdot \frac{j}{100}\ \mu\text{s}, \quad j \in \{70, \ldots, 129\} \]
+          <p>First retry: 2 ms × (0.70 to 1.29), so 1.4–2.58 ms. From the 7th retry on, the base is capped at 100 ms, so 70–129 ms.</p>
+          <p><strong>Original text harness:</strong></p>
+          \[ b(p) = \Big\lfloor \min\big(20 \cdot 2^{p},\ 5000\big) \cdot \tfrac{100 + j}{100} \Big\rfloor \text{ ms}, \quad j \in \{-30, \ldots, 29\} \]
+          <p>Here \(p\) is the priority after incrementing, 2 on the first restart, so the first backoff is 56–103 ms and the capped one 3,500–6,450 ms. Jitter is applied after the cap, so the "5-second maximum" is exceeded by up to 29%.</p>
+          <p><strong>Trade-off:</strong> longer backoff means fewer repeat deadlocks but higher latency and idle time. The old harness's multi-second sleeps are a big part of why its average latency reached 25 seconds, which is one reason the benchmark uses a 1 ms base and a 100 ms cap.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/08-part-harness-and-metrics.html#s4">Part 4, sections 4</a> and <a href="../explanations/08-part-harness-and-metrics.html#s6">6</a> · <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s9">Page 4, section 9</a></p>
+      </article>
+
+      <article class="qa" id="t16">
+        <div class="qa-id">T16</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Deadlock:</strong> threads are blocked, and nothing moves.</li>
+            <li><strong>Livelock:</strong> threads keep running and changing state, like repeatedly aborting and retrying, but make little or no progress.</li>
+            <li><strong>Starvation:</strong> the system as a whole progresses, but a particular transaction doesn't.</li>
+          </ul>
+        </div>
+        <h3 class="q">What's livelock? Did you see it?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Progress properties, identified in your own data.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Livelock is activity without progress. In lock-based systems it usually looks like transactions repeatedly deadlocking, aborting and retrying into the same conflicts.</strong></p>
+          <p><strong>Close to it, yes.</strong> The high-contention workload at 1,000 threads (20 items, 30% writes) logged 220,943 deadlock aborts over about 5 h 58 min to commit 1,000 transactions, roughly 221 aborts per commit. The second run was killed after about 2 h 22 min and 175,970 aborts. The system technically progressed, and run 0 finished, so strictly it's severe thrashing plus starvation rather than a pure livelock. In practice, it was unusable.</p>
+          <p><strong>Mitigations:</strong></p>
+          <ul>
+            <li>Admission control, so far fewer transactions compete at once (T8).</li>
+            <li>Backoff that grows enough to actually thin out the competitors.</li>
+            <li>Victim policies with a progress guarantee, such as keeping the original timestamp and never aborting the oldest (D5).</li>
+            <li>Removing deadlocks altogether by acquiring locks in a fixed order when the item set is known (T17).</li>
+          </ul>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s7">Part 3, section 7</a></p>
+      </article>
+
+      <article class="qa" id="t17">
+        <div class="qa-id">T17</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Ordered acquisition:</strong> if every transaction locks items in the same global order (say, ascending ID), there can't be a circular wait, so there are no deadlocks.</li>
+            <li><strong>Conservative (static) 2PL:</strong> acquire every lock at the start.</li>
+            <li><strong>Wound-wait:</strong> an older transaction that needs a younger one's lock aborts it, and a younger one waits for an older one.</li>
+          </ul>
+        </div>
+        <h3 class="q">How would you reduce the number of aborts under high contention?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Engineering options, grounded in the workload's structure.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <ol>
+            <li><strong>Remove deadlocks structurally.</strong> In my benchmark, every transaction's operations are generated before it runs. I could sort its items and take each item's strongest needed lock, X if any operation writes it, in ascending order. No circular wait means zero deadlock aborts. It also removes upgrade deadlocks, because read-then-write takes X up front. The cost is holding some locks longer than needed.</li>
+            <li><strong>Shorten lock hold time.</strong> Do slow work (the 1 ms "I/O") before acquiring locks, or outside the transaction, so conflicts overlap less.</li>
+            <li><strong>Limit concurrency</strong> to the measured peak, about 4–8 here (T8).</li>
+            <li><strong>Use update locks</strong> for read-then-write, to avoid conversion deadlocks without taking X early.</li>
+            <li><strong>Better victims:</strong> abort the transaction that has done the least work, and keep original timestamps so old transactions stop being re-victimized.</li>
+            <li><strong>Change the concurrency-control scheme</strong> for the workload: MVCC so reads never block, or wound-wait to avoid detection delay.</li>
+          </ol>
+          <p>I'd start with option 1 in the benchmark, because it's simple, provably deadlock-free for that harness, and directly testable with the existing serializability checks.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s2">Page 4, section 2</a></p>
+      </article>
+
+      <article class="qa" id="t18">
+        <div class="qa-id">T18</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Throughput:</strong> work completed per unit of time. <strong>Latency:</strong> time for one unit of work.</li>
+            <li><strong>Percentiles:</strong> p50 is the median, p99 is the value 99% of transactions beat.</li>
+            <li>Techniques that raise throughput, like batching and queueing, often increase latency.</li>
+          </ul>
+        </div>
+        <h3 class="q">Throughput and latency: which did you optimize, and what would you add to the benchmark?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether you know what your numbers leave out.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>The benchmark measures throughput only. The original harness recorded per-transaction latency, but on the old engine.</strong></p>
+          <p>They can diverge sharply. Under high contention, a few long-starved transactions barely move average throughput, but they dominate tail latency. In the old harness, the average latency was 25 s with a maximum of 34 s. And a transaction aborted 1,980 times would have an enormous individual latency, even if the run's throughput looked tolerable at lower thread counts.</p>
+          <p><strong>What I'd add:</strong></p>
+          <ul>
+            <li>Record start time on the first attempt and end time at commit, per transaction.</li>
+            <li>Report p50, p99 and max latency, plus a histogram of aborts per transaction (a direct starvation metric).</li>
+            <li>Report time spent waiting for locks versus doing work.</li>
+            <li>Report the abort share per point.</li>
+          </ul>
+          <p>Then the admission-control choice in T8 could target "maximize throughput subject to p99 under X ms", which is how production systems are actually tuned.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/08-part-harness-and-metrics.html#s5">Part 4, section 5</a></p>
+      </article>
+    </section>
+
+  </main>
+  <div class="pager">
+    <a href="02-2pl-serializability-threads.html"><span class="lbl">Back</span>← 2 · 2PL, serializability, threads</a>
+    <a class="next" href="04-priority-aging-deadlocks.html"><span class="lbl">Next</span>4 · Priority, aging, deadlocks →</a>
+  </div>
+</div>
+</body>
+</html>

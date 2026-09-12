@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>2 · 2PL, serializability, 1,000 threads · Interview Prep</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="qa.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Interview prep</a><span class="sep">/</span><span class="here">2 · 2PL, serializability, threads</span></div>
+    <span class="stage-tag">21 questions · S1–S21</span>
+    <h1 class="title">"A concurrent transaction manager in C++ with 2-Phase Locking (2PL), guaranteeing ACID serializability across 1,000+ threads"</h1>
+    <p class="dek">The questions this bullet invites: serializability theory and the proof that 2PL delivers it, how your lock manager grants, waits and upgrades, how you verified serializability, whether "guaranteeing" holds at 1,000 threads (it doesn't, and you should know exactly why), the data races you fixed, and what 1,000 threads on 8 cores really means.</p>
+  </header>
+  <main>
+
+    <nav class="qindex" aria-label="Questions on this page">
+      <h2>Questions</h2>
+      <div class="group">Serializability theory</div>
+      <ul>
+        <li><a href="#s1"><span class="qn">S1</span>What is serializability?</a></li>
+        <li><a href="#s2"><span class="qn">S2</span>Testing a schedule: the precedence graph</a></li>
+        <li><a href="#s3"><span class="qn">S3</span>Prove 2PL is serializable</a></li>
+        <li><a href="#s4"><span class="qn">S4</span>What 2PL doesn't give you</a></li>
+      </ul>
+      <div class="group">Your lock manager</div>
+      <ul>
+        <li><a href="#s5"><span class="qn">S5</span>Compatibility matrix and lock table</a></li>
+        <li><a href="#s6"><span class="qn">S6</span>How a transaction waits</a></li>
+        <li><a href="#s7"><span class="qn">S7</span>Who gets the lock on release?</a></li>
+        <li><a href="#s8"><span class="qn">S8</span>Lock upgrades, and the bug</a></li>
+        <li><a href="#s9"><span class="qn">S9</span>Two readers both want to write</a></li>
+      </ul>
+      <div class="group">"Guaranteeing" serializability</div>
+      <ul>
+        <li><a href="#s10"><span class="qn">S10</span>How did you verify serializability?</a></li>
+        <li><a href="#s11"><span class="qn">S11</span>Is it guaranteed at 1,000+ threads?</a></li>
+        <li><a href="#s12"><span class="qn">S12</span>The 1,000-thread race, root-caused</a></li>
+        <li><a href="#s13"><span class="qn">S13</span>Why only at 1,000 threads?</a></li>
+        <li><a href="#s14"><span class="qn">S14</span>Is it an ABA problem?</a></li>
+      </ul>
+      <div class="group">C++ correctness</div>
+      <ul>
+        <li><a href="#s15"><span class="qn">S15</span>Data races you found and fixed</a></li>
+        <li><a href="#s16"><span class="qn">S16</span>Why CAS for commit/abort?</a></li>
+        <li><a href="#s17"><span class="qn">S17</span>Avoiding deadlocks between your own mutexes</a></li>
+      </ul>
+      <div class="group">1,000+ threads</div>
+      <ul>
+        <li><a href="#s18"><span class="qn">S18</span>Where do the 1,000 threads come from?</a></li>
+        <li><a href="#s19"><span class="qn">S19</span>1,000 threads on 8 cores: gain and cost</a></li>
+        <li><a href="#s20"><span class="qn">S20</span>The thundering herd</a></li>
+        <li><a href="#s21"><span class="qn">S21</span>Scaling the lock manager</a></li>
+      </ul>
+    </nav>
+
+    <button class="reveal-all" type="button">Show all answers</button>
+
+    <!-- ============ THEORY ============ -->
+    <section class="qa-section">
+      <h2>Serializability theory</h2>
+
+      <article class="qa" id="s1">
+        <div class="qa-id">S1</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Schedule:</strong> the actual interleaved order of all transactions' operations. Notation: \(r_1(x)\) means T1 reads x, \(w_2(x)\) means T2 writes x, and \(c_1\) means T1 commits.</li>
+            <li><strong>Serial schedule:</strong> the transactions run one at a time, with no interleaving.</li>
+            <li><strong>Conflicting operations:</strong> from different transactions, on the same item, with at least one write. \(r_1(x), w_2(x)\) conflict. \(r_1(x), r_2(x)\) don't.</li>
+            <li><strong>Blind write:</strong> writing an item without reading it first.</li>
+          </ul>
+        </div>
+        <h3 class="q">What is serializability? What's the difference between conflict-serializability and view-serializability?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Precise definitions of the correctness criterion your CV names.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>A schedule is serializable if its effect equals that of some serial schedule of the same transactions.</strong> It doesn't have to be the order they started in, just some serial order.</p>
+          <p><strong>Conflict-serializable:</strong> you can turn the schedule into a serial one by repeatedly swapping adjacent operations that don't conflict. Equivalently, every pair of conflicting operations appears in the same order as in some serial schedule. It can be tested in linear time with a precedence graph (S2).</p>
+          <p><strong>View-serializable:</strong> every transaction reads the same versions as in some serial schedule (each read sees the same writer), and the final write to each item is the same. It's a larger class. Every conflict-serializable schedule is view-serializable, but not vice versa. The extra schedules all involve blind writes. For example, \(r_1(x)\, w_2(x)\, w_1(x)\, w_3(x)\) is view-equivalent to T1, T2, T3, because T3's blind write overwrites everything, but it isn't conflict-serializable. Testing view-serializability is NP-complete, so systems don't do it.</p>
+          <p><strong>What 2PL gives:</strong> conflict-serializability, and that's also exactly what my benchmark checks for.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/01-transactions-and-serializability.html#s5">Page 1, sections 5–6</a></p>
+      </article>
+
+      <article class="qa" id="s2">
+        <div class="qa-id">S2</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Directed graph:</strong> nodes plus arrows between them. A <strong>cycle</strong> is a path that returns to where it started.</li>
+            <li><strong>Topological sort:</strong> an ordering of nodes in which every arrow points forward. It exists exactly when the graph has no cycle. <strong>Kahn's algorithm</strong> finds one by repeatedly removing a node with no incoming arrows.</li>
+          </ul>
+        </div>
+        <h3 class="q">How do you test whether a schedule is conflict-serializable? Work through an example of each outcome.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Can you apply the precedence-graph test by hand, quickly?</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Build the precedence graph: one node per committed transaction, and an edge \(T_i \to T_j\) whenever an operation of \(T_i\) conflicts with a later operation of \(T_j\). The schedule is conflict-serializable exactly when the graph has no cycle, and any topological order is an equivalent serial order.</strong></p>
+          <p><strong>Serializable example:</strong> \(r_1(A)\; r_2(B)\; w_1(A)\; r_2(A)\; w_2(B)\; c_1\; c_2\). On A, \(w_1(A)\) precedes \(r_2(A)\), which gives \(T_1 \to T_2\). \(r_1(A)\) vs \(r_2(A)\) is two reads, so no edge. B is touched only by T2. The graph is just \(T_1 \to T_2\), so the schedule is equivalent to running T1 then T2.</p>
+          <p><strong>Not serializable (lost update):</strong> \(r_1(N)\; w_2(N)\; c_2\; w_1(N)\; c_1\). \(r_1(N) \lt w_2(N)\) gives \(T_1 \to T_2\), and \(w_2(N) \lt w_1(N)\) gives \(T_2 \to T_1\). That's a cycle, so there's no equivalent serial order. That exact shape appeared in my engine's logs before the upgrade fix.</p>
+          <p><strong>Cost:</strong> building the graph means comparing operations per item, and the cycle check or topological sort is \(O(V + E)\). My benchmark does exactly this after every run: it sorts each item's committed operations by sequence number, adds an edge for each conflicting pair, runs Kahn's algorithm, and reports how many transactions couldn't be placed.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/01-transactions-and-serializability.html#s7">Page 1, section 7</a> · <a href="../explanations/08-part-harness-and-metrics.html#s7">Part 4, section 7</a></p>
+      </article>
+
+      <article class="qa" id="s3">
+        <div class="qa-id">S3</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Lock point</strong> \(\ell(T)\): the time T acquires its last lock. Under 2PL, every acquisition happens at or before \(\ell(T)\), and every release after it.</li>
+            <li>For two conflicting operations, at least one needs an X lock, so the two transactions can't hold their locks on that item at the same time. One must release before the other acquires.</li>
+            <li>Precedence-graph edges from S2.</li>
+          </ul>
+        </div>
+        <h3 class="q">Prove that two-phase locking guarantees conflict-serializability.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether you understand <em>why</em> the protocol works, not just its rule. A favourite at strong database teams.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Claim:</strong> under 2PL, every edge in the precedence graph goes from an earlier lock point to a later one. So the graph has no cycle, and sorting transactions by lock point gives an equivalent serial order.</p>
+          <p><strong>Proof.</strong> Take an edge \(T_i \to T_j\). It exists because some operation of \(T_i\) on item x comes before a conflicting operation of \(T_j\) on x. Conflicting locks can't be held at the same time, so \(T_i\) released its lock on x, at time \(u_i(x)\), before \(T_j\) acquired its lock on x, at time \(a_j(x)\). By the two-phase rule, \(T_i\) acquired everything before releasing anything, and \(T_j\)'s acquisition of x is no later than its last acquisition:</p>
+          \[ \ell(T_i) \lt u_i(x) \lt a_j(x) \le \ell(T_j) \]
+          <p>So every edge satisfies \(\ell(T_i) \lt \ell(T_j)\). A cycle \(T_1 \to T_2 \to \cdots \to T_k \to T_1\) would give \(\ell(T_1) \lt \ell(T_2) \lt \cdots \lt \ell(T_1)\), which is impossible. So the graph is acyclic, and the schedule is conflict-serializable. ∎</p>
+          <p><strong>Where my bug fits in.</strong> The old upgrade released S and later acquired X on the same item, so that transaction had no single lock point, and the chain \(\ell(T_i) \lt u_i(x)\) broke. That's exactly how non-serializable schedules got through.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/03-locks-and-2pl.html#s6">Page 3, section 6</a></p>
+      </article>
+
+      <article class="qa" id="s4">
+        <div class="qa-id">S4</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Deadlock</strong> (circular wait), <strong>starvation</strong> (a transaction that never gets to finish although the system makes progress), <strong>cascading abort</strong> (one abort forcing others), and <strong>phantom</strong> (a newly inserted row that a repeated range query sees).</li>
+            <li>The proof in S3 assumes the implementation really follows the rule.</li>
+          </ul>
+        </div>
+        <h3 class="q">So does 2PL give you correct concurrency for free? What can still go wrong?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Knowing the protocol's limits, and connecting them to real bugs.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <ul>
+            <li><strong>Deadlocks.</strong> 2PL itself causes them: holding locks while waiting is one of the four deadlock conditions. You need detection or prevention. My high-contention runs at 64 threads had about 3,844 deadlock aborts each.</li>
+            <li><strong>Cascading aborts</strong> under basic 2PL, if X locks are released before commit. Strict 2PL removes that.</li>
+            <li><strong>Phantoms.</strong> The proof is about the items that were locked. A range query can't lock rows that don't exist yet, so you need predicate or next-key locks.</li>
+            <li><strong>Starvation.</strong> Nothing in 2PL says who gets a lock next. My grants let new readers barge ahead of queued writers, and one transaction in a 1,000-thread run was aborted 1,980 times.</li>
+            <li><strong>Implementation bugs that break the rule.</strong> I had two. The old upgrade path released S before acquiring X (fixed). And a remaining race lets the detector's delayed release remove a <em>restarted</em> transaction's locks, so two transactions briefly both hold X on one item. That failed my serializability check in 2 of 5 runs at 1,000 threads (S12).</li>
+            <li><strong>Throughput collapse.</strong> Locks held across slow work turn contention into waiting and thrashing.</li>
+          </ul>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/03-locks-and-2pl.html#s8">Page 3, section 8</a> · <a href="../explanations/07-part-deadlock-detector.html#s6">Part 3, section 6</a></p>
+      </article>
+    </section>
+
+    <!-- ============ LOCK MANAGER ============ -->
+    <section class="qa-section">
+      <h2>Your lock manager</h2>
+
+      <article class="qa" id="s5">
+        <div class="qa-id">S5</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Shared (S)</strong> lock: reading. Any number of transactions may hold S on the same item. <strong>Exclusive (X)</strong> lock: writing. Only one holder, and no S holders alongside it.</li>
+            <li><strong>Lock table:</strong> for each item, the list of lock requests, granted and waiting.</li>
+            <li><strong>Barging:</strong> granting a new request because it's compatible with current holders, even though older requests are still queued.</li>
+          </ul>
+        </div>
+        <h3 class="q">Describe your lock compatibility matrix and your lock table's data structure.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Basic lock-manager design, and whether you know your own grant policy.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>requested ↓ / held →</th><th>none</th><th>S</th><th>X</th></tr></thead>
+            <tbody>
+              <tr><td>S</td><td>grant</td><td>grant</td><td>wait</td></tr>
+              <tr><td>X</td><td>grant</td><td>wait</td><td>wait</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>One exception: a transaction's own S lock doesn't block its X request, which is how upgrades work.</p>
+          <p><strong>The table</strong> is <code>unordered_map&lt;int, vector&lt;LockRequest&gt;&gt;</code>, keyed by resource ID. Each <code>LockRequest</code> is {transaction ID, S or X, granted flag}. Granted and waiting requests share one vector, in arrival order. An upgrading transaction temporarily has two entries: its granted S and a pending X. The whole table is protected by one mutex, with one condition variable for all waiters.</p>
+          <p><strong>Compatibility checks only the granted entries.</strong> An S request is granted unless some granted entry is X. An X request is granted only if no <em>other</em> transaction holds anything. The queue is ignored, so a new reader can barge past a writer who has been waiting, and transaction priority plays no part in granting.</p>
+        </div>
+        <div class="followup">
+          <span class="box-label">Likely follow-up</span>
+          <p><strong>"Why ignore the queue?"</strong> It maximizes concurrency for readers and is simple, but writers can starve. The alternative is FIFO: a request waits if anything incompatible is queued ahead of it. FIFO is fairer, but it can make compatible readers wait for nothing.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s1">Part 2, sections 1–2</a></p>
+      </article>
+
+      <article class="qa" id="s6">
+        <div class="qa-id">S6</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><code>cv.wait(lock, pred)</code> is equivalent to <code>while (!pred()) cv.wait(lock);</code>. It atomically releases the mutex and sleeps, and on waking re-acquires the mutex and re-checks <code>pred</code>.</li>
+            <li><strong>Spurious wakeup:</strong> a thread may wake without anyone notifying it, which is why the predicate is re-checked.</li>
+            <li><strong>Lost wakeup:</strong> if a thread checked its condition, released the mutex, and only then started waiting, a notify in between would be missed. <code>wait</code> avoids this by making the release and the sleep atomic.</li>
+          </ul>
+        </div>
+        <h3 class="q">When a lock can't be granted, how exactly does the transaction wait, and what wakes it up?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Correct condition-variable usage, and what counts as a wake-up reason in a lock manager.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p>Under the lock-table mutex, <code>acquireLock</code> appends a pending request to the item's vector and adds a request edge to the resource graph. It then releases the mutex and calls <code>waitForLock</code>, which re-locks and does <code>cv.wait(lock, canProceed)</code>. The predicate is true in three cases:</p>
+          <ol>
+            <li><strong>The transaction was aborted</strong> (chosen as a deadlock victim). After waking, it removes its pending request and returns <code>false</code>.</li>
+            <li><strong>It has no pending request any more.</strong> A releasing thread already granted it. It confirms it holds the lock and returns <code>true</code>.</li>
+            <li><strong>Its pending request is now compatible.</strong> It grants the request itself and returns <code>true</code>.</li>
+          </ol>
+          <p>Because <code>wait</code> is called with a predicate, spurious wakeups are harmless: it just re-checks and sleeps again. Checking the abort state inside the predicate is what lets the deadlock detector wake a victim that's asleep.</p>
+          <p><strong>A bug I fixed here.</strong> Case 2 used to return <code>false</code>. The code searched only for an <em>ungranted</em> entry after waking, found none, and fell through. The lock really was held, but callers were told it wasn't. That didn't break isolation, because other transactions check the table, which was correct. It did inflate the "lock failures" metric: one pre-fix run showed 6,911 failures against 6,701 restarts. A regression test now checks that a waiter granted by <code>releaseLock</code> gets <code>true</code>.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s4">Part 2, section 4</a> · <a href="../explanations/02-threads-mutexes-condvars.html#s5">Page 2, section 5</a></p>
+      </article>
+
+      <article class="qa" id="s7">
+        <div class="qa-id">S7</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><code>notify_one</code> wakes one waiter. <code>notify_all</code> wakes every thread waiting on that condition variable.</li>
+            <li><strong>Writer starvation:</strong> a writer waits forever because readers keep overlapping.</li>
+          </ul>
+        </div>
+        <h3 class="q">When a lock is released, who gets it next?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Grant policy and fairness, at the level of your own code.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>The releasing thread grants every waiting request that has become compatible, pending upgrades first, then in arrival order, and then wakes all waiters.</strong></p>
+          <p><code>releaseLock</code> removes the entry, then runs <code>grantWaitersInternal</code> in a loop. Pass 1 looks for a pending X from a transaction that already holds S on the item (an upgrade) and grants it if compatible. Pass 2 grants the first compatible pending request in vector order. After each grant it re-scans, until nothing more can be granted. Then <code>notify_all</code>.</p>
+          <p><strong>Why upgrades go first:</strong> the upgrader already holds S. Granting a fresh request before it could let a new writer slip in between the upgrader's read and its write.</p>
+          <p><strong>Fairness gap:</strong> arrival order only applies among requests that are compatible right now. If T1 and T4 hold S, and the queue is [T2 wants X, T3 wants S], then when T4 releases, T2's X is still blocked by T1, and T3's S is granted, skipping T2. If readers keep overlapping, T2 starves.</p>
+          <p><strong>Why <code>notify_all</code>:</strong> a single condition variable serves every resource, so the code can't target just the waiters of this item. Everyone wakes, re-checks, and most go back to sleep. That's correct but wasteful (S20).</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s5">Part 2, section 5</a></p>
+      </article>
+
+      <article class="qa" id="s8">
+        <div class="qa-id">S8</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>A <strong>lock upgrade</strong> converts a held S lock into X, because the transaction read an item and now wants to write it. The textbook implementation keeps S granted while the X waits, and converts once the transaction is the only holder.</p>
+        </div>
+        <h3 class="q">How do lock upgrades work in your implementation? I hear there was a bug.</h3>
+        <p class="tests"><span class="box-label">Tests</span>A subtle place where lock managers go wrong, and whether you can explain the failure precisely.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Now:</strong> if the transaction is the only holder, S is converted to X in place. Otherwise, it keeps its granted S and appends a pending X entry, then waits. When the other readers release, pass 1 of the grant loop gives it the X, and the old S entry is erased. While it waits, its S still blocks every other writer, so nobody can change the item between its read and its write.</p>
+          <p><strong>Before the fix:</strong> the code erased the granted S entry and queued a fresh X request. During the wait the transaction held <em>nothing</em> on the item, so another transaction could take X, write and commit, and then the upgrader wrote based on a stale read: a lost update. That's also a release followed by an acquisition, so it wasn't even 2PL.</p>
+          <p><strong>Evidence it happened:</strong> replaying the pre-fix lock logs of the 1,000-transaction random workload found 106 and 109 upgrade waits in two runs. In 4 cases per run, another transaction was granted X during the gap and the upgrader still committed, each case forming a precedence cycle (about 0.4% of commits).</p>
+          <p><strong>Proof it's fixed:</strong> a regression test holds S for T101 and T102, starts T101's upgrade, and then checks four things: T101 still holds S, a third transaction can't get X in the window, the upgrade completes once T102 leaves, and T101 ends with exactly one X entry. All passed. The benchmark's precedence check also passed in all 100 recorded runs at up to 64 threads.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s6">Part 2, section 6</a></p>
+      </article>
+
+      <article class="qa" id="s9">
+        <div class="qa-id">S9</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>An <strong>update (U) lock</strong> is an intermediate mode for "I read this and may write it". U is compatible with S but not with another U, so only one transaction can be positioned to upgrade at a time.</p>
+        </div>
+        <h3 class="q">Two transactions both hold a shared lock on the same item, and both ask to upgrade to exclusive. What happens in your system?</h3>
+        <p class="tests"><span class="box-label">Tests</span>The classic conversion deadlock, and how your detector resolves it.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>They deadlock, and the detector breaks it by aborting one of them.</strong> T1 keeps S and queues X, which is blocked by T2's S. T2 keeps S and queues X, which is blocked by T1's S. The wait-for snapshot contains T1→T2 (T1's pending X against T2's granted S) and T2→T1, which is a cycle.</p>
+          <p>On its next pass, the detector picks the member with the lower priority number, breaking ties by the higher ID. It CASes that transaction to <code>ABORTED</code> and calls <code>releaseAllLocks</code>, which removes both the victim's granted S and its pending X. The grant loop then gives the survivor its upgrade, since its X is now compatible. The victim's thread wakes, sees it was aborted, backs off, and restarts with priority + 1. The test file <code>test1.txt</code> is built around exactly this pattern.</p>
+          <p><strong>Keeping S makes this deadlock possible</strong>, but dropping S (the old behaviour) avoided it only by breaking serializability. The standard way to avoid it is a U lock: a transaction that intends to write takes U instead of S, so the second would-be upgrader waits at the U request instead of forming a cycle. Or it takes X up front when the write is known in advance, which my benchmark could do because each transaction's operations are generated ahead of time.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/03-locks-and-2pl.html#s3">Page 3, section 3</a> · <a href="../explanations/06-part-lock-manager.html#s6">Part 2, section 6</a></p>
+      </article>
+    </section>
+
+    <!-- ============ GUARANTEE ============ -->
+    <section class="qa-section">
+      <h2>"Guaranteeing" serializability</h2>
+
+      <article class="qa" id="s10">
+        <div class="qa-id">S10</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Sequence number:</strong> a global atomic counter, incremented for each recorded event, that gives the events a total order.</li>
+            <li><strong>Invariant check:</strong> a property that must hold at the end of any correct run, e.g. "each counter equals the number of committed increments".</li>
+            <li>The precedence-graph test from S2.</li>
+          </ul>
+        </div>
+        <h3 class="q">How did you verify that your engine actually produces serializable schedules?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether "guaranteeing" is backed by a real check, and whether you know the check's limits.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Two automatic checks on every benchmark run, plus regression tests. Before those existed, I replayed logs by hand.</strong></p>
+          <ol>
+            <li><strong>Precedence graph over the real history.</strong> Right after each lock is granted, while it's still held, the worker records {sequence number, transaction, R or W, item}. Conflicting operations can't hold their locks at the same time, so sequence order equals the true conflict order. After the run, for each item I sort committed events by sequence number, add an edge for each conflicting pair from different transactions, and run Kahn's algorithm. The number of transactions it can't place must be zero.</li>
+            <li><strong>Lost-update invariant.</strong> Each write stores (value seen) + 1, so at the end every item's value must equal the number of committed writes to it.</li>
+            <li><strong>Regression tests</strong> for each bug: 16 checks, covering the upgrade window, granted waits, cycle-only victims, an end-to-end deadlock, and the commit/abort race.</li>
+          </ol>
+          <p><strong>Results:</strong> all 100 recorded benchmark runs at 1–64 threads passed both checks, across CPU-only, low-contention and high-contention workloads. At 1,000 threads, 2 of 5 runs failed the precedence check while passing the lost-update check. That shows the graph check is the stronger of the two.</p>
+          <p><strong>Limits:</strong> testing can show a bug exists but can't prove there isn't one. The checks only look at committed transactions. And they test conflict-serializability, which is exactly what 2PL promises, but stricter than necessary for correctness.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/08-part-harness-and-metrics.html#s7">Part 4, section 7</a> · <a href="../explanations/09-results-and-takeaways.html#s5">Results, section 5</a></p>
+      </article>
+
+      <article class="qa" id="s11">
+        <div class="qa-id">S11</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>"Guarantee"</strong> means for every execution, not just the ones you tried.</li>
+            <li><strong>Incarnation:</strong> each restart of an aborted transaction is a new attempt. In this engine it reuses the <em>same</em> transaction ID, but a new <code>Transaction</code> object.</li>
+          </ul>
+        </div>
+        <h3 class="q">Your CV says "guaranteeing ACID serializability across 1,000+ threads." Is serializability actually guaranteed at 1,000 threads?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Honesty under pressure. The interviewer may already suspect the answer.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>No. Up to 64 threads, every run I recorded was serializable. At 1,000 threads I found a race that breaks it, identified the cause, and validated a fix, but the fix isn't merged yet.</strong></p>
+          <ul>
+            <li><strong>Evidence of failure:</strong> the low-contention benchmark (1,000 transactions, 1,000 items, 1 ms per operation) at 1,000 threads failed the precedence-graph check in 2 of 5 runs, with 3 and 101 transactions that couldn't be placed in any serial order. An instrumented reproduction failed in 4 of 20 runs.</li>
+            <li><strong>Cause:</strong> the deadlock detector marks a victim aborted, then releases "all locks of transaction ID n" a moment later. If the victim has already restarted under the same ID and taken new locks, that delayed release removes the <em>new</em> attempt's locks and hands them to someone else. Two transactions then both hold X on one item.</li>
+            <li><strong>Fix validated:</strong> skipping the release when the registry now holds a different transaction object under that ID gave 0 of 20 failures.</li>
+            <li><strong>Where it holds:</strong> 100 of 100 runs at 1–64 threads passed.</li>
+          </ul>
+          <p>Also, "ACID serializability" isn't a real term. Serializability is the I in ACID, and my engine doesn't provide the D at all (E5).</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>Don't say "guaranteed". A safe version: <em>"implements strict 2PL, verified serializable with a precedence-graph check on every benchmark run; all runs up to 64 threads passed, and at 1,000 threads I found and root-caused a remaining race."</em> Interviewers respect a found-and-explained bug far more than a claim that collapses on the first follow-up.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s6">Part 3, section 6</a> · <a href="../explanations/09-results-and-takeaways.html#s5">Results, section 5</a></p>
+      </article>
+
+      <article class="qa" id="s12">
+        <div class="qa-id">S12</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>TOCTOU (time of check to time of use):</strong> a decision made on a value checked earlier, which another thread changed before the value is used.</li>
+            <li><strong>Restart under the same ID:</strong> the harness calls <code>beginTransaction(..., sameId, priority + 1)</code>, which registers a fresh <code>Transaction</code> object under the old ID.</li>
+            <li><strong>Instrumentation:</strong> counters added to the code to observe an event you suspect, without changing behaviour.</li>
+            <li><strong>Small-sample statistics:</strong> 4 failures in 20 runs is an estimate with a wide uncertainty range.</li>
+          </ul>
+        </div>
+        <h3 class="q">Walk me through the race you found at 1,000 threads. How did you confirm it was the root cause?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Concurrency debugging method: hypothesis, instrumentation, controlled experiment, and honest statistics.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>The sequence.</strong> In one pass, the detector finds a cycle through T17 and:</p>
+          <ol>
+            <li>CASes T17 to <code>ABORTED</code>.</li>
+            <li>Logs a warning, which takes the logger mutex and flushes to a file.</li>
+            <li>Calls <code>releaseAllLocks(17)</code>, which has to win the one lock-table mutex against up to 1,000 worker threads.</li>
+          </ol>
+          <p>Between steps 1 and 3, T17's worker is woken by some other thread's <code>notify_all</code>. It sees <code>ABORTED</code>, backs off for 1.4–2.6 ms, and calls <code>beginTransaction</code> with ID 17. That call releases the old attempt's locks itself, registers a new transaction object with ID 17, and the new attempt starts acquiring locks. If the detector is still stalled, step 3 then removes the <em>new</em> T17's locks and grants them to waiters. The new T17 carries on believing it holds X, while another transaction also holds X on the same item.</p>
+          <p><strong>Confirming it.</strong></p>
+          <ol>
+            <li><strong>Symptom:</strong> precedence-check failures appeared only at 1,000 threads, with the lost-update check still passing.</li>
+            <li><strong>Hypothesis</strong> from reading the code: an ID-keyed release can target the wrong attempt.</li>
+            <li><strong>Instrumentation:</strong> I passed the aborted transaction object into <code>releaseAllLocks</code> and counted releases where the registry held a different object that owned granted locks. With the repo's behaviour unchanged, 12 of 20 runs had at least one such stale release (20 locks in total), and 4 of 20 runs failed serializability.</li>
+            <li><strong>Controlled change:</strong> the same build, but skipping those releases. The skip fired 20 times across 14 runs, and 0 of 20 runs failed. Throughput didn't change beyond noise (2,475.8 vs 2,372.5 txn/s median).</li>
+          </ol>
+          <p><strong>Honest statistics:</strong> 4/20 has a 95% Wilson interval of roughly 8–42%, and 0/20 roughly 0–16%. A one-sided Fisher test gives p ≈ 0.053. The failure counts alone are suggestive, not conclusive. The stronger evidence is mechanistic: stale releases were observed, and removing exactly them removed the failures.</p>
+          <p><strong>Proper fix:</strong> make the release name the attempt, not just the ID. Pass an incarnation number or the object, give each restart a fresh ID, or mark aborted and release inside one critical section.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s6">Part 3, section 6</a> · <a href="../explanations/09-results-and-takeaways.html#s9">Results, section 9</a></p>
+      </article>
+
+      <article class="qa" id="s13">
+        <div class="qa-id">S13</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Oversubscription:</strong> more runnable threads than cores. The OS scheduler time-slices them, so any single thread can wait milliseconds to run again.</li>
+            <li><strong>Race window:</strong> the time interval in which a bad interleaving is possible. A bug shows up when some thread's delay is longer than that window.</li>
+            <li><strong>Lock convoy:</strong> many threads queued on one mutex, each waking, running briefly and waiting again.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why did the race appear only at 1,000 threads and never at 64?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Reasoning about timing windows and scheduling, and being clear about what's measured versus inferred.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>The bug needs the detector to stall between marking the victim aborted and releasing its locks, for longer than the victim takes to back off (at least 1.4 ms), restart, and grab new locks. Stalls that long are rare with 64 threads and routine with 1,000.</strong></p>
+          <p>With 1,000 threads on 8 cores, the detector thread competes for CPU time with up to 1,000 others, so being descheduled for a few milliseconds is normal. It also has to win the single lock-table mutex against a large convoy of workers, and it flushes a log line under the logger mutex in the middle of the window. At 64 threads, contention on both the CPU and the mutex is far lower, so the detector almost always finishes the release before the victim restarts.</p>
+          <p><strong>What's measured and what's inferred:</strong> the measurement is 0 failures in 100 recorded runs at up to 64 threads, versus 2 of 5 and 4 of 20 at 1,000 threads. That the scheduling delay is the reason is an inference from how the window works. I didn't measure detector stall times. The takeaway: "didn't fail at 64 threads" never meant "correct". The window existed all along, and more threads only made it likely to be hit.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s6">Part 3, section 6</a></p>
+      </article>
+
+      <article class="qa" id="s14">
+        <div class="qa-id">S14</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p><strong>ABA problem:</strong> thread 1 reads a value A and plans a compare-and-swap. Thread 2 changes it to B and back to A. Thread 1's CAS then succeeds, even though the thing it refers to has changed, for example a freed and reallocated node at the same address. Standard fixes: a version counter or tagged pointer alongside the value, or deferred reclamation (hazard pointers, epochs).</p>
+        </div>
+        <h3 class="q">Is your 1,000-thread race related to the ABA problem?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether you can connect your bug to a known family and borrow its known fixes.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>It's the same family: identity by a reused name.</strong> In ABA, a pointer value is reused for a new object. In my bug, a transaction ID is reused for a new attempt. The detector decided to release "transaction 17" when 17 meant the aborted attempt, but acted after 17 had come to mean the restarted one. It's not literally a failed CAS, though. It's a stale ID-keyed operation.</p>
+          <p>The fixes carry over directly:</p>
+          <ul>
+            <li><strong>Version or tag:</strong> pair the ID with an incarnation counter, and have <code>releaseAllLocks(id, incarnation)</code> do nothing if the registered attempt's counter differs. That's the equivalent of a tagged pointer.</li>
+            <li><strong>Compare identity, not name:</strong> pass the <code>Transaction</code> object (the registry already stores <code>shared_ptr</code>s) and skip the release if the registry holds a different object. That's what my validated scratch fix did.</li>
+            <li><strong>Never reuse the name:</strong> give every restart a fresh ID, while keeping the original timestamp for priority purposes.</li>
+          </ul>
+          <p>Interestingly, the codebase already used this idea in one place. <code>UnregisterTransaction(id, expected)</code> removes an entry only if it's the expected object, which stops an old attempt's cleanup from deleting the new registration. The same guard was missing on lock release.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s3">Part 1, section 3</a> · <a href="../explanations/07-part-deadlock-detector.html#s6">Part 3, section 6</a></p>
+      </article>
+    </section>
+
+    <!-- ============ C++ ============ -->
+    <section class="qa-section">
+      <h2>C++ correctness</h2>
+
+      <article class="qa" id="s15">
+        <div class="qa-id">S15</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Data race:</strong> two threads access the same memory at the same time, at least one writes, and no mutex coordinates them. In C++ that's undefined behaviour: not just a wrong value, but anything, including a crash inside a hash map during a rehash.</li>
+            <li><strong>ThreadSanitizer (TSan):</strong> a compiler instrumentation that detects data races at runtime.</li>
+            <li><strong>Dangling pointer:</strong> a pointer to an object that has already been destroyed.</li>
+          </ul>
+        </div>
+        <h3 class="q">What data races did you find in the engine, and how did you fix each one?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Practical thread-safety experience beyond "I used a mutex".</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Race</th><th>Why it was a race</th><th>Fix</th></tr></thead>
+            <tbody>
+              <tr><td>Transaction registry: static <code>unordered_map&lt;id, Transaction*&gt;</code></td><td>no mutex. Restarts erased and inserted while other threads looked up, so a rehash during a lookup could crash. Lookups also returned raw pointers to possibly destroyed objects.</td><td>a dedicated mutex (a leaf lock), with <code>shared_ptr</code> values so a looked-up transaction stays alive</td></tr>
+              <tr><td><code>Transaction::state</code></td><td>written by the detector thread (abort) and by the owner (commit), read by both, with no common mutex. Check-then-set let commit and abort both succeed.</td><td><code>std::atomic&lt;TransactionState&gt;</code> with CAS loops (S16)</td></tr>
+              <tr><td>Harness item map <code>dataItemToResourceId</code> and counter</td><td>1,000 threads inserting at once, right after the barrier released them</td><td>a mutex in <code>getResourceId</code></td></tr>
+              <tr><td>Raw <code>Transaction*</code> used after the facade's mutex was released</td><td>could dangle if another thread erased the transaction during a long lock wait</td><td>hold a <code>shared_ptr</code> copy</td></tr>
+              <tr><td>Logger level and console flag</td><td>plain fields, and their setters locked the mutex and then called <code>info()</code>, which locked it again: a self-deadlock</td><td><code>std::atomic</code> fields, no outer lock</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p><strong>How I found them:</strong> by reading the code and asking, for each shared variable, which mutex protects it on every access. ThreadSanitizer wasn't usable on my machine: it failed to flag a deliberate two-thread race in a tiny test program, so I didn't trust its silence on the real code. On Linux I'd run the benchmark under TSan as a CI job.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s2">Part 1, sections 2–5</a> · <a href="../explanations/08-part-harness-and-metrics.html#s2">Part 4, section 2</a></p>
+      </article>
+
+      <article class="qa" id="s16">
+        <div class="qa-id">S16</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><code>state.compare_exchange_weak(expected, desired)</code>: atomically, if <code>state == expected</code>, set it to <code>desired</code> and return true. Otherwise copy the current value into <code>expected</code> and return false. The "weak" form may fail spuriously, so it's used in a loop. The "strong" form doesn't fail spuriously.</li>
+            <li><strong>Lock ordering:</strong> taking mutexes in inconsistent orders across threads can deadlock the threads themselves.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why did you use compare-and-swap for commit and abort instead of a mutex? Walk me through the race.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Atomics beyond counters: exactly-once state transitions under contention.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>The owner's commit and the detector's abort race to end the same transaction, and exactly one may win. A CAS on a single atomic enum gives that cheaply, with no new lock to fit into the existing mutex order.</strong></p>
+<pre class="code"><code>bool Transaction::commit() {
+    TransactionState s = state.load();
+    while (s == GROWING || s == SHRINKING)
+        if (state.compare_exchange_weak(s, COMMITTED)) return true;
+    return false;                       // someone else set ABORTED (or it already committed)
+}
+bool Transaction::abort() {
+    TransactionState s = state.load();
+    while (s != COMMITTED)
+        if (s == ABORTED || state.compare_exchange_weak(s, ABORTED)) return true;
+    return false;                       // it committed first
+}</code></pre>
+          <p>Both threads load <code>GROWING</code>.</p>
+          <ul>
+            <li><strong>If the detector's CAS lands first:</strong> the state is <code>ABORTED</code>. The owner's CAS fails, <code>s</code> becomes <code>ABORTED</code>, and its loop exits, so commit returns <code>false</code> and the worker retries.</li>
+            <li><strong>If the owner lands first:</strong> the detector's CAS fails, <code>s</code> becomes <code>COMMITTED</code>, so abort returns <code>false</code> and the detector logs that the victim already finished.</li>
+          </ul>
+          <p>A spurious failure just re-reads <code>s</code> and tries again. Neither order lets both succeed.</p>
+          <p><strong>Why not a mutex:</strong> a per-transaction mutex would work too. But the detector calls abort while holding its graph mutex, and the owner calls commit while holding nothing, so a new mutex would add another lock-ordering rule to get right. The CAS also can't block, and its only possible delay is a retry.</p>
+          <p><strong>Why it matters downstream:</strong> commit installs writes only after its CAS succeeds, so the detector can never abort a transaction halfway through installing.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s2">Part 1, section 2</a></p>
+      </article>
+
+      <article class="qa" id="s17">
+        <div class="qa-id">S17</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Lock hierarchy:</strong> give every mutex a rank, and always acquire in increasing rank. That makes a cycle of threads waiting on each other's mutexes impossible.</li>
+            <li><strong>Leaf lock:</strong> a mutex whose holder never acquires any other mutex, so it can always be taken last.</li>
+          </ul>
+        </div>
+        <h3 class="q">Your engine has several mutexes. How do you make sure the engine's own threads can't deadlock on them?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether you applied deadlock reasoning to your implementation, not only to transactions.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Every code path takes them in one consistent order, and the lowest-level mutexes are leaves.</strong> The order is:</p>
+<pre class="code"><code>ConcurrencyManager::mtx
+  → DeadlockDetector::run_mutex_ → graph_mutex_
+      → LockManager::mtx
+          → Transaction::registry_mutex_          (leaf)
+          → ResourceAllocationGraph::mtx → Logger::mtx   (logger is a leaf)</code></pre>
+          <ul>
+            <li>The facade takes its mutex only for map lookups and phase checks, and <strong>releases it before calling <code>LockManager::acquireLock</code></strong>, which may sleep. <code>beginTransaction</code> does call <code>releaseAllLocks</code> while holding the facade mutex, which is facade → lock table, consistent with the order.</li>
+            <li>The detector holds its graph mutex while calling <code>getWaitForEdges</code> and <code>releaseAllLocks</code> (graph → lock table). No lock-manager code ever calls back into the detector, so that edge is never reversed.</li>
+            <li><code>LockManager</code> looks up transactions under its mutex. The registry mutex is a leaf: its three functions touch only the map.</li>
+            <li>Waiting for a <em>transaction</em> lock uses <code>cv.wait</code>, which releases the lock-table mutex while sleeping. No thread ever sleeps holding a mutex.</li>
+          </ul>
+          <p>One self-deadlock did exist: the logger's setters locked its mutex and then called <code>info()</code>, which locked it again. Nothing called those setters, and the fix removed the outer lock.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/05-part-transaction-and-manager.html#s3">Part 1, section 3</a> · <a href="../explanations/02-threads-mutexes-condvars.html#s4">Page 2, section 4</a></p>
+      </article>
+    </section>
+
+    <!-- ============ THREADS ============ -->
+    <section class="qa-section">
+      <h2>1,000+ threads</h2>
+
+      <article class="qa" id="s18">
+        <div class="qa-id">S18</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Thread-per-transaction:</strong> each transaction gets its own OS thread. <strong>Thread pool:</strong> a fixed number of worker threads take transactions from a shared queue.</li>
+            <li><code>std::barrier(n)</code>: each thread calls <code>arrive_and_wait()</code>, and all n are released together once the last arrives.</li>
+          </ul>
+        </div>
+        <h3 class="q">Where do the "1,000+ threads" come from? How did you run them?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether the number is concrete and you know exactly what it counts.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <ul>
+            <li><strong>Text-schedule harness:</strong> thread-per-transaction. The 1,000-transaction files start 1,000 worker threads, each waiting at a <code>std::barrier</code> so they all begin their first operation at the same instant. Add the main thread and the detector thread, and that's 1,002 threads.</li>
+            <li><strong>Benchmark:</strong> a pool of T workers pulling transaction indices from an atomic counter. At T = 1,000 with 1,000 transactions, each worker ends up running about one transaction. A <code>std::latch</code> starts the clock only once every thread exists.</li>
+          </ul>
+          <p>All of this ran on an 8-core Apple M3, so at most 8 threads execute at any instant. The rest are blocked on locks, sleeping in simulated I/O or backoff, or waiting for the scheduler.</p>
+          <p>What 1,000 threads showed: they ran and completed, but the low-contention benchmark at 1,000 threads reached 13.98× over serial, less than 64 threads (53.74×), and it exposed the race in S12. On the high-contention workload, a 1,000-thread run took about 6 hours to commit 1,000 transactions.</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>"1,000+ threads" is true as a count, but it isn't an achievement by itself. The interesting facts are that 64 threads was the fastest point measured, and that 1,000 threads broke serializability. Say <em>"tested up to 1,000 concurrent threads"</em>, and have S19 ready.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/08-part-harness-and-metrics.html#s4">Part 4, sections 4</a> and <a href="../explanations/08-part-harness-and-metrics.html#s6">6</a></p>
+      </article>
+
+      <article class="qa" id="s19">
+        <div class="qa-id">S19</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Blocked vs runnable:</strong> a thread sleeping or waiting on I/O or a lock doesn't need a core. A runnable thread does.</li>
+            <li><strong>Context switch:</strong> the OS saving one thread's state and loading another's. It costs CPU time and evicts useful data from the CPU caches.</li>
+            <li><strong>Thread stack:</strong> each thread reserves its own stack memory.</li>
+            <li><strong>Sizing rule of thumb:</strong> \(N_{\text{threads}} \approx N_{\text{cores}} \times \left(1 + \frac{W}{C}\right)\), where \(W/C\) is the ratio of a task's waiting time to its computing time.</li>
+          </ul>
+        </div>
+        <h3 class="q">You have 8 cores. What does running 1,000 threads buy you, and what does it cost?</h3>
+        <p class="tests"><span class="box-label">Tests</span>OS-level reasoning about oversubscription, with your own numbers.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Threads beyond the core count help only while they're waiting on something other than the CPU and each other. Past that point they cost memory, scheduling time and lock contention.</strong></p>
+          <p><strong>The gain, measured:</strong> with 1 ms of simulated I/O per operation and rare conflicts, throughput scaled 7.97× at 8 threads (99.6% efficiency), 28.60× at 32 and 53.74× at 64 (84%). Sleeping threads don't need cores, so going past 8 still helped.</p>
+          <p><strong>The costs at 1,000:</strong></p>
+          <ul>
+            <li>Each thread has its own stack and kernel structures.</li>
+            <li>Waking 1,000 threads and scheduling them on 8 cores adds latency to every hand-off.</li>
+            <li>With one lock-table mutex and a <code>notify_all</code> on every release, each release wakes a crowd that fights for the mutex.</li>
+            <li>Timing windows open up: the detector gets descheduled long enough to hit the race.</li>
+          </ul>
+          <p>Result: 13.98×, with a 29% spread between runs and 2 of 5 runs not serializable. With no I/O at all, even 2 threads were slower than 1 (0.63×).</p>
+          <p><strong>Sizing:</strong> \(N \approx 8 \times (1 + W/C)\). As a hypothetical, if a transaction spends 20× longer waiting than computing, that's \(8 \times 21 = 168\) threads. I didn't measure the real ratio, so in practice I'd pick the thread count from the measured curve, or adapt it at runtime (T8).</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/02-threads-mutexes-condvars.html#s1">Page 2, section 1</a> · <a href="../explanations/09-results-and-takeaways.html#s4">Results, section 4</a></p>
+      </article>
+
+      <article class="qa" id="s20">
+        <div class="qa-id">S20</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p><strong>Thundering herd:</strong> many threads sleep on the same condition, one event wakes all of them, they all compete for the same mutex to re-check, and almost all go back to sleep. The wasted wakeups are roughly \(R \times W\): notifications times waiters.</p>
+        </div>
+        <h3 class="q">What's a thundering herd? Does your lock manager have one?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Recognizing a performance anti-pattern in your own design.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Yes.</strong> The lock manager uses one condition variable for every waiter on every resource, and every release calls <code>notify_all</code>. A release on item 5 wakes the threads waiting on item 900. Each one re-acquires the single lock-table mutex just to find its predicate is still false.</p>
+          <p>As a hypothetical: 10,000 releases with 100 waiters each is \(10{,}000 \times 100 = 1{,}000{,}000\) wakeups, when each release could unblock only a few waiters. I didn't count wakeups in my runs. It's a likely contributor to the CPU-only workload getting slower with more threads (0.24× at 32), alongside plain mutex contention, but I didn't isolate it.</p>
+          <p><strong>Fixes, in increasing effort:</strong></p>
+          <ol>
+            <li>One condition variable per resource, notified only when that resource changes.</li>
+            <li>Because releases already grant waiters directly, notify only the specific threads whose requests were granted, using a condition variable per waiting request.</li>
+            <li>Combine that with a striped lock table (S21), so unrelated resources don't even share a mutex.</li>
+          </ol>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/02-threads-mutexes-condvars.html#s6">Page 2, section 6</a> · <a href="../explanations/06-part-lock-manager.html#s5">Part 2, section 5</a></p>
+      </article>
+
+      <article class="qa" id="s21">
+        <div class="qa-id">S21</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Lock striping:</strong> split a table into N buckets by hash of the key, each with its own mutex, so operations on different buckets run in parallel.</li>
+            <li><strong>Cache-line bouncing:</strong> a heavily shared mutex's memory ping-pongs between cores' caches, slowing every acquisition.</li>
+            <li><strong>Consistent snapshot:</strong> reading a multi-part structure as it was at one instant.</li>
+          </ul>
+        </div>
+        <h3 class="q">Your CPU-only benchmark got slower with more threads. How would you make the lock manager scale across cores?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Systems design applied to your own bottleneck, including the trade-offs a fix introduces.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>The evidence:</strong> with no work per operation, throughput fell from 333,625 txn/s at 1 thread to 79,181 at 32 (0.24×). Every lock call serializes on one mutex, and every release wakes every waiter. Even against the slowest single-thread run, 32 threads reached only 0.30×.</p>
+          <p><strong>Changes, in order of impact:</strong></p>
+          <ol>
+            <li><strong>Stripe the lock table:</strong> hash resource IDs into, say, 64 buckets, each with its own mutex and wait queues. Transactions on different items stop contending.</li>
+            <li><strong>Targeted wakeups:</strong> a wait queue per resource, and notify only the waiters that were just granted (S20).</li>
+            <li><strong>Get work out of the critical section:</strong> my lock manager builds log-message strings under the mutex even when the log level discards them, and the text harness writes the whole resource graph to a file while holding a mutex that lock operations also need.</li>
+            <li><strong>Cheaper request bookkeeping:</strong> reuse request objects instead of allocating them, and replace the per-transaction scans in <code>releaseAllLocks</code> (which walks the entire table) with a per-transaction list of held resources.</li>
+          </ol>
+          <p><strong>The trade-off:</strong> the deadlock detector currently takes one consistent snapshot under the single mutex. With stripes, I'd either lock all stripes in index order for the snapshot (a brief global pause), or accept a non-atomic snapshot and re-verify each cycle's edges under the relevant stripe latches before aborting, which avoids phantom deadlocks. Real systems also add lock-wait timeouts as a backstop.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s1">Part 2, sections 1</a> and <a href="../explanations/06-part-lock-manager.html#s8">8</a> · <a href="../explanations/09-results-and-takeaways.html#s4">Results, section 4</a></p>
+      </article>
+    </section>
+
+  </main>
+  <div class="pager">
+    <a href="01-engine-acid-strict-2pl.html"><span class="lbl">Back</span>← 1 · The engine</a>
+    <a class="next" href="03-throughput-commit-rate.html"><span class="lbl">Next</span>3 · Throughput and commit rate →</a>
+  </div>
+</div>
+</body>
+</html>

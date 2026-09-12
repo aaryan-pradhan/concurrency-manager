@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>4 · Priority, aging and deadlocks · Interview Prep</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="qa.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="render.js"></script>
+</head>
+<body>
+<div class="offline-note">Formulas are typeset by KaTeX, which loads from the internet. Without a connection they show as raw LaTeX.</div>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><a href="index.html">Interview prep</a><span class="sep">/</span><span class="here">4 · Priority, aging, deadlocks</span></div>
+    <span class="stage-tag">19 questions · D1–D19</span>
+    <h1 class="title">"Implemented priority scheduling with aging to prevent starvation and eliminated deadlocks via cycle detection on Wait-For Graphs"</h1>
+    <p class="dek">Two claims in one bullet, both easy to probe. The first set of questions covers starvation, what your priority actually controls, whether aging worked, and how to guarantee progress. The second covers deadlock theory, the wait-for graph and its snapshot, the cycle search, victim selection, the detection interval, and whether "eliminated" is the right word.</p>
+  </header>
+  <main>
+
+    <nav class="qindex" aria-label="Questions on this page">
+      <h2>Questions</h2>
+      <div class="group">Starvation, priority, aging</div>
+      <ul>
+        <li><a href="#d1"><span class="qn">D1</span>Starvation vs deadlock vs livelock</a></li>
+        <li><a href="#d2"><span class="qn">D2</span>What "priority scheduling" controls</a></li>
+        <li><a href="#d3"><span class="qn">D3</span>How aging works in the code</a></li>
+        <li><a href="#d4"><span class="qn">D4</span>Did aging prevent starvation?</a></li>
+        <li><a href="#d5"><span class="qn">D5</span>Guaranteeing no starvation</a></li>
+        <li><a href="#d6"><span class="qn">D6</span>Priority inversion</a></li>
+      </ul>
+      <div class="group">Deadlock theory</div>
+      <ul>
+        <li><a href="#d7"><span class="qn">D7</span>The four Coffman conditions</a></li>
+        <li><a href="#d8"><span class="qn">D8</span>Prevention, avoidance, detection, timeouts</a></li>
+        <li><a href="#d9"><span class="qn">D9</span>Did you "eliminate" deadlocks?</a></li>
+      </ul>
+      <div class="group">The wait-for graph</div>
+      <ul>
+        <li><a href="#d10"><span class="qn">D10</span>What it is and how you build it</a></li>
+        <li><a href="#d11"><span class="qn">D11</span>Consistent snapshots and phantom deadlocks</a></li>
+        <li><a href="#d12"><span class="qn">D12</span>RAG vs WFG</a></li>
+      </ul>
+      <div class="group">Cycle detection and recovery</div>
+      <ul>
+        <li><a href="#d13"><span class="qn">D13</span>The cycle-detection algorithm</a></li>
+        <li><a href="#d14"><span class="qn">D14</span>Why DFS, not Kahn or Tarjan?</a></li>
+        <li><a href="#d15"><span class="qn">D15</span>Victim selection, and the old bug</a></li>
+        <li><a href="#d16"><span class="qn">D16</span>What happens after a victim is chosen</a></li>
+        <li><a href="#d17"><span class="qn">D17</span>How often to run the detector</a></li>
+        <li><a href="#d18"><span class="qn">D18</span>Several cycles, or a victim that just committed</a></li>
+        <li><a href="#d19"><span class="qn">D19</span>Deadlock detection when distributed</a></li>
+      </ul>
+    </nav>
+
+    <button class="reveal-all" type="button">Show all answers</button>
+
+    <section class="qa-section">
+      <h2>Starvation, priority, aging</h2>
+
+      <article class="qa" id="d1">
+        <div class="qa-id">D1</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p><strong>Progress properties</strong> describe whether work gets done. <strong>Safety</strong> says nothing bad happens, like a non-serializable result. <strong>Liveness</strong> says something good eventually happens, like a transaction committing. Deadlock, livelock and starvation are three different liveness failures.</p>
+        </div>
+        <h3 class="q">What is starvation, and how is it different from deadlock and livelock? Give an example of each from your system.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Precise vocabulary, tied to concrete cases.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th></th><th>Definition</th><th>In my system</th></tr></thead>
+            <tbody>
+              <tr><td>Deadlock</td><td>a set of transactions each blocked waiting for a lock another holds, in a cycle. Nobody in the set moves.</td><td>two readers of F both request X(F) (the upgrade deadlock); the alternating R(K)…W(J) / R(J)…W(K) batches</td></tr>
+              <tr><td>Livelock</td><td>transactions keep acting, aborting and retrying, but the group makes little or no progress</td><td>high contention at 1,000 threads: about 221 aborts per commit over roughly 6 hours</td></tr>
+              <tr><td>Starvation</td><td>the system progresses, but one transaction is repeatedly passed over or aborted and never, or very late, finishes</td><td>a writer skipped while new readers barge in; one transaction aborted 1,980 times while others committed</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p><strong>The key difference:</strong> deadlock is a stable blocked state that needs an external action (an abort) to break. Livelock and starvation involve constant activity, so detecting a cycle doesn't reveal them. Fixing them takes fairness or ordering rules.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s8">Page 4, section 8</a></p>
+      </article>
+
+      <article class="qa" id="d2">
+        <div class="qa-id">D2</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Priority scheduling (OS sense):</strong> the scheduler always runs the highest-priority ready thread.</li>
+            <li><strong>In a lock manager</strong>, "priority" could affect three different decisions: who gets a lock first when it's released, who waits versus who aborts on a conflict, and who is chosen as the victim to break a deadlock.</li>
+          </ul>
+        </div>
+        <h3 class="q">What does "priority scheduling" mean in your engine? Where exactly is priority used?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether the term on the CV matches what the code does.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Priority is used in exactly one place: choosing the deadlock victim. It's not used to schedule threads or to decide who gets a lock.</strong></p>
+          <ul>
+            <li><strong>Victim selection:</strong> when the detector finds a cycle, it aborts the member with the <em>lowest</em> priority number, breaking ties by the highest ID.</li>
+            <li><strong>Lock grants ignore it.</strong> A new request is granted if it's compatible with current holders, even ahead of queued waiters (barging). On release, pending upgrades are granted first, then other waiters in arrival order. Priority never enters either rule.</li>
+            <li><strong>Threads aren't prioritized.</strong> The OS schedules all worker threads equally.</li>
+          </ul>
+          <p>So an accurate name is <strong>priority-based victim selection</strong>. A high-priority transaction can still wait behind a low-priority one indefinitely, as long as no deadlock cycle forms.</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>Don't describe it as "priority scheduling". An interviewer with an OS background will ask about the ready queue or preemption. Say: <em>"deadlock victims are chosen by priority, and a transaction's priority rises each time it's aborted."</em></p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s2">Part 2, section 2</a> · <a href="../explanations/07-part-deadlock-detector.html#s7">Part 3, section 7</a></p>
+      </article>
+
+      <article class="qa" id="d3">
+        <div class="qa-id">D3</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p><strong>Aging:</strong> gradually raise the priority of work that has waited or failed a lot, so it eventually wins against newer work. It's the textbook remedy for starvation in priority schemes.</p>
+        </div>
+        <h3 class="q">How is aging implemented? Show me where in the code.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Code-level accuracy about where the mechanism lives.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Aging lives in the harnesses, not in the engine. Every time a transaction is aborted, its thread increments a local priority and passes it to the restart.</strong></p>
+<pre class="code"><code>// tests/benchmark.cpp (retry path)
+aborts++;  attempt++;  priority++;
+sleep_for(backoff(attempt));
+txnId = cm.beginTransaction("", txnId, priority);     // same ID, priority + 1
+
+// tests/test_deadlock_detection.cpp (after each read/write, and on a failed commit)
+if (cm.getTransactionState(txnId) == TransactionState::ABORTED) {
+    recordTxnRestart(txnNum);  i = -1;  priority++;
+    sleep_for(milliseconds(calculateBackoff(priority)));
+}</code></pre>
+          <p>After \(k\) aborts, a transaction's priority is \(p_k = 1 + k\). <code>beginTransaction</code> stores it in the new <code>Transaction</code> object, and the detector reads it through the registry when choosing a victim: lowest number is aborted first. Nothing inside <code>src/</code> ever changes a priority after creation, and nothing ages a transaction for time spent <em>waiting</em>. Only aborts count.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s7">Part 3, section 7</a></p>
+      </article>
+
+      <article class="qa" id="d4">
+        <div class="qa-id">D4</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li>A useful <strong>starvation metric</strong> is the maximum number of times any single transaction was aborted in a run. In the benchmark that's the maximum priority reached, minus 1.</li>
+            <li>Victim rule from D2: lowest priority in the cycle is aborted.</li>
+          </ul>
+        </div>
+        <h3 class="q">Did aging actually prevent starvation? What's your evidence?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Whether "to prevent starvation" was measured.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>No. Under heavy contention some transactions were aborted many times, and in the worst case one transaction was aborted 1,980 times.</strong></p>
+          <p>Evidence from the benchmark's engine log for the high-contention workload (20 items, 30% writes, 1 ms per operation), which records every victim with its priority:</p>
+          <ul>
+            <li><strong>64 threads, 5 runs:</strong> the highest priority reached per run was 10, 19, 12, 10 and 11. So in one run a single transaction was aborted 18 times.</li>
+            <li><strong>1,000 threads, run 0:</strong> 220,943 aborts over about 6 hours, and a maximum priority of <strong>1,981</strong>. One transaction was aborted 1,980 times.</li>
+          </ul>
+          <p><strong>Why aging didn't guarantee progress:</strong></p>
+          <ol>
+            <li>Priority only matters relative to the other members of a cycle. Under heavy contention everyone gets aborted and aged, so a cycle of old transactions still has to sacrifice one old transaction.</li>
+            <li>Lock grants ignore priority. An aged transaction can wait behind newcomers, which gives it more chances to end up in new cycles.</li>
+            <li>Priority is reset for each new transaction, so it measures repeated failure, not age in time.</li>
+          </ol>
+          <p><strong>Caveat:</strong> those 1,000-thread runs were also exposed to the stale-release race, and the log can't separate its effect.</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>Don't claim aging "prevents starvation". Say: <em>"victim priority increases with each abort to reduce repeated victimization; I measured that it didn't prevent starvation under extreme contention, with one transaction aborted 1,980 times, and the fix is timestamp-based victim selection."</em></p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s7">Part 3, section 7</a></p>
+      </article>
+
+      <article class="qa" id="d5">
+        <div class="qa-id">D5</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Timestamp:</strong> a number assigned when a transaction <em>first</em> starts. A smaller timestamp means older.</li>
+            <li><strong>Wait-die:</strong> if an older transaction requests a lock held by a younger one, it waits. If a younger one requests a lock held by an older one, the younger one dies (aborts and restarts).</li>
+            <li><strong>Wound-wait:</strong> if an older transaction requests a lock held by a younger one, it wounds (aborts) the younger one. If a younger one requests a lock held by an older one, it waits.</li>
+            <li>In both schemes, a restarted transaction <strong>keeps its original timestamp</strong>.</li>
+          </ul>
+        </div>
+        <h3 class="q">How would you actually guarantee that no transaction starves?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Knowing schemes with provable progress, and why they work.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Order transactions by their original start time, keep that timestamp across restarts, and never abort the oldest active transaction.</strong></p>
+          <p><strong>Wound-wait.</strong> A younger transaction only ever waits for an older one, so every wait edge points from younger to older. Such a graph can't have a cycle, so there are no deadlocks and no detector is needed. The oldest active transaction is never wounded, because nobody is older, so it only waits for holders that are either wounded or finish. It therefore finishes. Then the next-oldest becomes the oldest, and so on. Since a restart keeps its timestamp, every transaction eventually becomes the oldest and commits. Spanner uses wound-wait for its read-write transactions.</p>
+          <p><strong>Wait-die</strong> gives the same guarantee with the opposite choice. Older transactions wait, and younger ones abort themselves. It tends to cause more aborts of young transactions, but never interrupts one that is already holding locks.</p>
+          <p><strong>Keeping detection:</strong> change the victim rule to "youngest by original start time" instead of "lowest attempt count", and carry the first-start timestamp through restarts. To also prevent grant starvation, switch from barging to FIFO queues, so a waiting writer blocks newer readers.</p>
+          <p><strong>Trade-off:</strong> timestamp schemes abort on some conflicts that would never have become deadlocks, so the abort count can rise at moderate contention.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s2">Page 4, sections 2</a> and <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s8">8</a></p>
+      </article>
+
+      <article class="qa" id="d6">
+        <div class="qa-id">D6</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p><strong>Priority inversion:</strong> a high-priority task needs a resource held by a low-priority task, and medium-priority tasks keep the low-priority one from running, so the high-priority task effectively waits behind everyone. The well-known case is NASA's Mars Pathfinder in 1997. <strong>Priority inheritance</strong> fixes it by temporarily raising the holder's priority to that of the highest waiter.</p>
+        </div>
+        <h3 class="q">What is priority inversion? Could something like it happen in your lock manager?</h3>
+        <p class="tests"><span class="box-label">Tests</span>An OS concept, transferred to a database setting.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>An analogous effect, yes.</strong> A high-priority (much-aborted) transaction that requests X on an item held by a low-priority transaction simply waits, because priority doesn't affect grants. While it waits, other low-priority transactions can keep acquiring compatible locks (barging), stretching the wait. If a cycle then forms, the old transaction is protected only if a lower-priority member exists. Otherwise it's aborted yet again.</p>
+          <p>It's not identical to the OS case. Threads aren't preempted by priority, so "medium-priority tasks running" doesn't apply directly. What's the same is that a high-priority piece of work is blocked by low-priority holders, with nothing to speed them up.</p>
+          <p><strong>Remedies in lock managers:</strong></p>
+          <ul>
+            <li>Wound the lower-priority holder (wound-wait), the database version of "the important one gets the resource now".</li>
+            <li>Priority-ordered grant queues, so waiting high-priority requests are served before newcomers.</li>
+            <li>An inheritance-like boost that makes the holder of a lock a high-priority waiter needs the least likely victim, so it finishes and releases sooner.</li>
+          </ul>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s2">Part 2, sections 2</a> and <a href="../explanations/06-part-lock-manager.html#s5">5</a></p>
+      </article>
+    </section>
+
+    <section class="qa-section">
+      <h2>Deadlock theory</h2>
+
+      <article class="qa" id="d7">
+        <div class="qa-id">D7</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>The <strong>Coffman conditions</strong> (1971) are necessary for deadlock. If any one of them is removed, deadlock can't occur:</p>
+          <ol>
+            <li><strong>Mutual exclusion:</strong> a resource can be held by only one party at a time.</li>
+            <li><strong>Hold and wait:</strong> a party holds resources while waiting for more.</li>
+            <li><strong>No preemption:</strong> resources can't be taken away, only released voluntarily.</li>
+            <li><strong>Circular wait:</strong> a cycle of parties, each waiting for the next.</li>
+          </ol>
+        </div>
+        <h3 class="q">What are the four conditions for deadlock? Which of them hold in your system, and could you remove any?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Deadlock theory applied to a lock manager.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>All four hold.</strong></p>
+          <ol>
+            <li><strong>Mutual exclusion:</strong> X locks are exclusive, and S excludes X.</li>
+            <li><strong>Hold and wait:</strong> 2PL's growing phase means a transaction keeps every lock it has while it waits for the next one, and strict 2PL keeps them to commit.</li>
+            <li><strong>No preemption:</strong> the lock manager never takes a granted lock away. The detector's abort is recovery <em>after</em> a deadlock exists: it effectively preempts all of the victim's locks.</li>
+            <li><strong>Circular wait:</strong> transactions touch items in arbitrary order. <code>dead_test.txt</code> makes this happen on purpose: half of each batch reads K and later writes J, and half read J and later write K.</li>
+          </ol>
+          <p><strong>Removing one:</strong></p>
+          <ul>
+            <li><strong>Circular wait</strong> is the practical target: lock items in a global order, which my benchmark could do because its operations are known in advance (T17).</li>
+            <li><strong>Hold and wait</strong> goes away with conservative 2PL, acquiring every lock up front, which needs the whole item set in advance and hurts concurrency.</li>
+            <li><strong>No preemption</strong> is relaxed by wound-wait, which lets an older transaction take a younger one's locks by aborting it.</li>
+            <li><strong>Mutual exclusion</strong> can't go for writes, though MVCC removes it between readers and writers.</li>
+          </ul>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s1">Page 4, section 1</a> · <a href="../explanations/08-part-harness-and-metrics.html#s3">Part 4, section 3</a></p>
+      </article>
+
+      <article class="qa" id="d8">
+        <div class="qa-id">D8</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Prevention:</strong> structurally break a Coffman condition, e.g. with lock ordering, wait-die or wound-wait.</li>
+            <li><strong>Avoidance:</strong> grant a request only if the system stays in a "safe" state. The <strong>Banker's algorithm</strong> does this, but needs each party's maximum resource claim in advance.</li>
+            <li><strong>Detection and recovery:</strong> allow deadlocks, find cycles, abort victims.</li>
+            <li><strong>Timeout:</strong> assume any long wait is a deadlock, and abort it.</li>
+          </ul>
+        </div>
+        <h3 class="q">Compare deadlock prevention, avoidance, detection and timeouts. Which fits a database, and why did you pick detection?</h3>
+        <p class="tests"><span class="box-label">Tests</span>A structured comparison with realistic constraints.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Approach</th><th>Needs</th><th>Aborts</th><th>Cost / risk</th></tr></thead>
+            <tbody>
+              <tr><td>Lock ordering</td><td>the item set known up front</td><td>none from deadlock</td><td>locks held longer; impossible for ad-hoc queries</td></tr>
+              <tr><td>Wait-die / wound-wait</td><td>timestamps</td><td>on some conflicts, even without a cycle</td><td>extra aborts at moderate contention; no detector needed; starvation-free</td></tr>
+              <tr><td>Avoidance (Banker's)</td><td>maximum claims in advance</td><td>none; requests wait instead</td><td>claims are unknowable for transactions; a safety check on every request</td></tr>
+              <tr><td>Detection</td><td>a wait-for graph</td><td>only real deadlocks</td><td>detection delay; graph cost; victim policy needed</td></tr>
+              <tr><td>Timeout</td><td>a time limit</td><td>any long wait, deadlocked or not</td><td>hard to tune; slow recovery if the limit is long</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p><strong>Databases</strong> typically use detection, a timeout as a backstop, or wound-wait and wait-die, especially when distributed. Avoidance is rarely used, because transactions can't declare maximum claims.</p>
+          <p><strong>I chose detection</strong> because my transactions touch items in arbitrary order, and detection aborts only when a cycle really exists. The project actually started with a 5-second lock timeout and replaced it with detection in April 2025. The measured price is visible under contention: thousands of detected deadlocks at 64 threads, each costing a victim's work.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s2">Page 4, section 2</a> · <a href="../explanations/06-part-lock-manager.html#s9">Part 2, section 9</a></p>
+      </article>
+
+      <article class="qa" id="d9">
+        <div class="qa-id">D9</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p><strong>Eliminate</strong> means make impossible, which is prevention. <strong>Detect and resolve</strong> means deadlocks still form, and are broken afterwards by aborting a transaction.</p>
+        </div>
+        <h3 class="q">Your CV says you "eliminated deadlocks via cycle detection". Did you?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Precision in wording. Detection can't eliminate anything.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>No. Detection doesn't eliminate deadlocks. It lets them happen and then breaks them. What I can say is that no run ever hung on one.</strong></p>
+          <ul>
+            <li>High-contention benchmark: 8, 23, 96, 433, 1,479 and 3,844 deadlock-victim aborts per run at 2, 4, 8, 16, 32 and 64 threads. In the benchmark nothing else aborts transactions, so each is a broken deadlock.</li>
+            <li>Original harness, pre-fix: 2,843–2,953 restarts per run on the random file, and 6,701–6,731 on the deadlock-heavy file.</li>
+            <li>Every one of those runs completed, and every transaction eventually committed. So detection plus recovery kept the system live. The exception was 1,000 threads under high contention, which took about 6 hours.</li>
+          </ul>
+          <p>Eliminating them would take prevention, such as ordered lock acquisition or wound-wait (D5, D7).</p>
+        </div>
+        <div class="callout impl">
+          <span class="box-label">Be careful</span>
+          <p>Say <em>"detected and resolved deadlocks with cycle detection on a wait-for graph"</em>, never "eliminated". If you want a result, use: <em>"every run up to 64 threads completed, with all transactions committed, despite up to 3,844 deadlocks per run."</em></p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s9">Part 3, section 9</a></p>
+      </article>
+    </section>
+
+    <section class="qa-section">
+      <h2>The wait-for graph</h2>
+
+      <article class="qa" id="d10">
+        <div class="qa-id">D10</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Wait-for graph (WFG):</strong> nodes are transactions, and an edge W→H means W waits for a lock that H holds.</li>
+            <li>For single-instance resources like item locks, <strong>a cycle in the WFG means a deadlock</strong>.</li>
+            <li>Compatibility: a waiting S is blocked only by X holders. A waiting X is blocked by any other holder.</li>
+          </ul>
+        </div>
+        <h3 class="q">What is a wait-for graph, and how does your detector build it? Walk through an example.</h3>
+        <p class="tests"><span class="box-label">Tests</span>Correct edge construction, including shared locks and upgrades.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p>Each pass, the detector calls <code>LockManager::getWaitForEdges()</code>. Under one acquisition of the lock-table mutex, it walks every resource's request list and emits an edge from each <em>pending</em> request to each <em>granted</em> request of a different transaction, unless both are shared. The detector then drops edges whose waiter or holder is already marked aborted, and rebuilds its adjacency list from scratch.</p>
+          <p><strong>Example.</strong></p>
+          <ul>
+            <li>R1: T1 and T2 hold S, and T3 waits for X. That gives T3→T1 and T3→T2.</li>
+            <li>R2: T4 holds X, and T5 waits for S. That gives T5→T4.</li>
+            <li>R3: T1 and T2 hold S, and T1 waits for X (an upgrade). That gives T1→T2 only: T1's own S isn't an edge.</li>
+          </ul>
+          <p>The graph {T3→T1, T3→T2, T5→T4, T1→T2} has no cycle, so no deadlock. If T2 now also asks to upgrade on R3, the edge T2→T1 appears, and T1→T2→T1 is a deadlock.</p>
+          <p><strong>Cost:</strong> the scan is proportional to the lock table's size, and it holds the global mutex for that whole time. That's a trade-off against the detection interval (D17).</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/06-part-lock-manager.html#s7">Part 2, section 7</a> · <a href="../explanations/07-part-deadlock-detector.html#s2">Part 3, section 2</a></p>
+      </article>
+
+      <article class="qa" id="d11">
+        <div class="qa-id">D11</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Consistent snapshot:</strong> every part of the data read as of the same instant.</li>
+            <li><strong>Phantom deadlock:</strong> a cycle that appears only because edges were read at different times. At no single moment did the cycle actually exist. Aborting for it wastes a transaction.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why does it matter that the graph is taken under a single mutex acquisition? What did the old code do?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Reasoning about consistency of monitoring data under concurrency.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Old code:</strong> for every resource ID from 0 to 9,999, it called <code>getWaitingTransactions(id)</code> and <code>getLockHolders(id)</code>, each taking and releasing the mutex. That caused three problems:</p>
+          <ul>
+            <li>At least 10,000 mutex acquisitions per pass, even though the workloads use 12–26 items.</li>
+            <li>Resources with ID ≥ 10,000 were never inspected, so a deadlock there would never be broken, and with no timeout it would hang forever.</li>
+            <li>The table changed between calls, so the graph could mix edges from different moments. That allows phantom deadlocks: say T1→T2 was read before T2 got its lock, and T2→T1 after T1 had moved on.</li>
+          </ul>
+          <p><strong>New code:</strong> one pass over the table under one acquisition. Every edge describes the same instant.</p>
+          <p><strong>Why a cycle is then real:</strong> an edge means the waiter is asleep, and sleeping transactions release nothing. The lock manager also never leaves a grantable request ungranted when it releases the mutex, since every release path grants compatible waiters first. So at that instant, every member of the cycle is genuinely stuck, and the cycle can't dissolve by itself. The abort is never wasted on a phantom.</p>
+          <p><strong>Trade-off:</strong> the single acquisition holds the global mutex for the whole scan, briefly blocking every transaction. With a striped table you'd either lock all stripes in order, or re-verify a found cycle's edges before aborting.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s2">Part 3, section 2</a></p>
+      </article>
+
+      <article class="qa" id="d12">
+        <div class="qa-id">D12</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>A <strong>resource allocation graph (RAG)</strong> has two kinds of nodes, transactions and resources. A <em>request edge</em> T→R means T waits for R. An <em>assignment edge</em> R→T means R is held by T. A WFG is a RAG with the resource nodes collapsed away. With <strong>multi-instance resources</strong> (e.g. 3 identical printers), a RAG cycle is necessary for deadlock but not sufficient.</p>
+        </div>
+        <h3 class="q">Your project has both a resource allocation graph and a wait-for graph. What's the difference, and which one detects deadlocks?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Graph models, and knowing your own codebase's structure.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>The wait-for graph detects deadlocks. The resource allocation graph is kept in step with the lock table and used for tracing.</strong></p>
+          <ul>
+            <li><strong>RAG:</strong> <code>LockManager</code> adds request and assignment edges as it queues and grants. The text harness writes the whole graph to <code>rag_log.txt</code> after every operation, which is useful for visualising who holds and wants what. It even has a correct DFS, <code>detectDeadlock()</code>, but nothing calls it during runs.</li>
+            <li><strong>WFG:</strong> the <code>DeadlockDetector</code> builds it fresh each pass from the lock-table snapshot, and runs cycle detection and victim selection on it.</li>
+          </ul>
+          <p><strong>Why the WFG for detection:</strong> each lock is a single-instance resource, so a cycle means a deadlock in either graph. The WFG is smaller (transactions only), and victim selection needs transactions anyway. A RAG pays off with multi-instance resources, where you must reason about available units, because a cycle alone doesn't prove deadlock.</p>
+          <p><strong>History:</strong> the RAG and its log used to drift out of step with the table, because some grants skipped the assignment edge. Now every grant goes through one function that updates both.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s3">Page 4, sections 3–4</a> · <a href="../explanations/07-part-deadlock-detector.html#s8">Part 3, section 8</a></p>
+      </article>
+    </section>
+
+    <section class="qa-section">
+      <h2>Cycle detection and recovery</h2>
+
+      <article class="qa" id="d13">
+        <div class="qa-id">D13</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>DFS states:</strong> unvisited; on the current recursion stack ("in progress"); finished.</li>
+            <li><strong>Back edge:</strong> an edge to a node that's still on the stack. In a directed graph, one exists exactly when there's a cycle.</li>
+            <li>\(V\) = number of nodes, \(E\) = number of edges.</li>
+          </ul>
+        </div>
+        <h3 class="q">Write out your cycle-detection algorithm, give its complexity, and show how you extract the exact cycle.</h3>
+        <p class="tests"><span class="box-label">Tests</span>A standard graph algorithm, adapted to the need to know cycle members.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+<pre class="code"><code>bool FindCycle(node, visited, inStack, path, cycle):
+    visited[node] = inStack[node] = true
+    path.push_back(node)
+    for nb in graph[node]:
+        if !visited[nb]:
+            if FindCycle(nb, visited, inStack, path, cycle): return true
+        else if inStack[nb]:                              // back edge node -&gt; nb
+            cycle = path[ index of nb .. end ]            // exactly the cycle members
+            return true
+    inStack[node] = false
+    path.pop_back()
+    return false
+
+HasCycle(victim):
+    for root in sorted(nodes): if !visited[root] and FindCycle(root, ...):
+        victim = argmin over cycle of (priority, then highest id)
+        return true
+    return false</code></pre>
+          <p><strong>Complexity:</strong> each node is visited once and each edge examined once, so one search is \(O(V + E)\). A detection pass that breaks \(k\) cycles runs \(k + 1\) searches, \(O(k(V + E))\), because it removes the victim and searches again.</p>
+          <p><strong>Extracting the cycle:</strong> the path holds the current chain from the root. When a back edge node→nb appears, the cycle is the segment from nb to node. Earlier nodes on the path only <em>wait on</em> the cycle.</p>
+          <p><strong>Example:</strong> edges T1→T2, T2→T3, T3→T2. The path grows [1], [1, 2], [1, 2, 3], then 3→2 is a back edge, so the cycle is [2, 3]. T1 isn't in it.</p>
+          <p><strong>Why sorted roots:</strong> determinism. The same graph always yields the same victim, which makes tests reproducible. Recursion depth is at most \(V\), which is fine for about 1,000 transactions. For much larger graphs I'd switch to an explicit stack.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s3">Part 3, section 3</a> · <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s5">Page 4, section 5</a></p>
+      </article>
+
+      <article class="qa" id="d14">
+        <div class="qa-id">D14</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Kahn's algorithm:</strong> repeatedly remove nodes with in-degree 0. If nodes remain, there's a cycle, but the remaining set also includes nodes merely downstream of a cycle.</li>
+            <li><strong>Tarjan's algorithm:</strong> finds strongly connected components (SCCs) in \(O(V + E)\). An SCC with more than one node contains at least one cycle.</li>
+            <li><strong>Union-find:</strong> detects cycles in <em>undirected</em> graphs.</li>
+          </ul>
+        </div>
+        <h3 class="q">Why DFS? Why not Kahn's topological sort, Tarjan's SCC algorithm, or union-find?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Choosing an algorithm by what the output must contain.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Victim selection needs the members of a specific cycle, and DFS with a path gives exactly that at the same \(O(V + E)\) cost.</strong></p>
+          <ul>
+            <li><strong>Kahn</strong> tells you a cycle exists, but its leftover set includes tail transactions that wait on the cycle without being part of it. Choosing a victim from that set is exactly the bug my old detector had: it could abort a tail, which breaks nothing. (My benchmark uses Kahn for the serializability check, where "how many can't be ordered" is precisely the question.)</li>
+            <li><strong>Tarjan</strong> is a strong alternative. One pass gives every SCC, so you can pick one victim per non-trivial SCC. But an SCC can contain several overlapping cycles, and removing one node may not break them all. You'd still have to re-run on that component, so the loop looks the same as mine.</li>
+            <li><strong>Union-find</strong> doesn't handle directed cycles. A→B and C→B share B, but that isn't a cycle.</li>
+          </ul>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s3">Part 3, sections 3–4</a> · <a href="../explanations/08-part-harness-and-metrics.html#s7">Part 4, section 7</a></p>
+      </article>
+
+      <article class="qa" id="d15">
+        <div class="qa-id">D15</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li>Aborting a node that's <strong>not on</strong> the cycle leaves the cycle intact.</li>
+            <li>Common victim criteria: least work done, fewest locks held, youngest (latest start), fewest previous restarts, or an explicit priority.</li>
+          </ul>
+        </div>
+        <h3 class="q">How do you choose a deadlock victim? What was wrong with the old version, and how did you prove it?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Victim policy design, and a concrete bug with a test.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Now:</strong> among the members of the extracted cycle, abort the one with the lowest priority number, breaking ties by the highest ID. A transaction that no longer exists sorts first, so it's simply dropped.</p>
+          <p><strong>The old bug:</strong> the running minimum was seeded with the DFS root and updated at every node while the recursion unwound, including nodes <em>before</em> the cycle began. So the victim was the lowest-priority node on the whole search path. Since every transaction starts at priority 1, with ties kept on the root, a tail node was often chosen.</p>
+          <p><strong>Proof:</strong> a unit test against the old class, with graph T1→T2, T2→T3, T3→T2 and all priorities equal, returned <strong>T1</strong>, which isn't in the cycle {T2, T3}. Aborting T1 breaks nothing, so the loop had to abort again, wasting work. The regression test now checks that same graph returns a cycle member (T3), and that with T1 = 0, T2 = 5, T3 = 1, the lower-priority tail T1 is still <em>not</em> chosen, but T3 is. All three checks passed.</p>
+          <p><strong>What I'd improve:</strong> use "youngest by original start time" (D5) for a progress guarantee, or "least work done", measured as locks held or operations completed, to minimize wasted work.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s4">Part 3, section 4</a></p>
+      </article>
+
+      <article class="qa" id="d16">
+        <div class="qa-id">D16</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li>The CAS-based <code>abort()</code>: it succeeds unless the transaction already committed.</li>
+            <li>The waiter's wake predicate, which includes "I was aborted".</li>
+            <li>Restart under the same ID, with priority + 1 and backoff.</li>
+          </ul>
+        </div>
+        <h3 class="q">Once a victim is chosen, what happens, step by step? How does the victim's own thread find out?</h3>
+        <p class="tests"><span class="box-label">Tests</span>The cross-thread recovery path, end to end.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <ol>
+            <li><strong>Detector thread:</strong> <code>txn-&gt;abort()</code> CASes the state to <code>ABORTED</code>. If the victim committed in the meantime, the CAS fails, and the detector just removes the node.</li>
+            <li><strong>Detector thread:</strong> logs a warning, then calls <code>releaseAllLocks(victim)</code>. Under the lock-table mutex, that removes the victim's granted <em>and</em> pending requests from every resource, clears its graph edges, grants any waiters that are now compatible (upgrades first), and calls <code>notify_all</code>.</li>
+            <li><strong>Detector thread:</strong> removes the victim and all edges into it from the wait-for graph, then searches again. The loop ends when no cycle remains, and it runs at most \(V\) times, since each iteration removes a node.</li>
+            <li><strong>Victim's thread:</strong> it was asleep in <code>cv.wait</code>. The notify wakes it, and its predicate is true because it's aborted. It removes any pending request of its own and <code>acquireLock</code> returns <code>false</code>.</li>
+            <li><strong>Harness:</strong> sees <code>ABORTED</code>, increments priority, sleeps for the backoff, then calls <code>beginTransaction(…, sameId, priority)</code>. That releases anything still held under the ID and registers a fresh transaction object. The benchmark also discards the attempt's buffered writes.</li>
+            <li><strong>Other waiters</strong> that were granted in step 2 wake with their predicate true (their request is no longer pending) and continue.</li>
+          </ol>
+          <p><strong>The known flaw in this sequence:</strong> step 2's release is keyed by ID and runs after a gap. If step 5 completes first, the release hits the restarted transaction's new locks. That's the 1,000-thread race in S12, and it's fixed by making the release check the object identity.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s5">Part 3, sections 5–6</a></p>
+      </article>
+
+      <article class="qa" id="d17">
+        <div class="qa-id">D17</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <p>If deadlocks form at uniformly random times and the detector runs every \(I\) milliseconds, a deadlock waits between 0 and \(I\) before the next pass starts, \(I/2\) on average, plus the pass time:</p>
+          \[ \mathbb{E}[\text{delay}] \approx \frac{I}{2} + t_{\text{pass}} \]
+          <p>Throughout that delay, the deadlocked transactions keep their locks, blocking everyone queued behind them.</p>
+        </div>
+        <h3 class="q">How often should the detector run? What's the trade-off, and what do real systems do?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Tuning with a model, not a guess.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Shorter intervals resolve deadlocks sooner, but take the global mutex more often for the snapshot.</strong></p>
+          <ul>
+            <li>Text harness, \(I = 100\) ms: about 50 ms average and up to 100 ms of dead time per deadlock, plus the pass.</li>
+            <li>Benchmark, \(I = 10\) ms: about 5 ms average and up to 10 ms. When transactions do 1 ms of work per operation and deadlocks happen thousands of times per run, a 5 ms average stall per deadlock is significant, so short intervals make sense there.</li>
+            <li>Cost: each pass holds the lock-table mutex for a full scan, and every transaction's lock calls queue behind it. I didn't measure the pass time.</li>
+          </ul>
+          <p><strong>Alternatives:</strong></p>
+          <ul>
+            <li><strong>Detect on wait:</strong> when a request blocks, search only from that transaction. There's no periodic cost when nothing waits, and the delay is zero. MySQL's InnoDB checks for deadlocks when a lock request has to wait, and allows turning that off in favour of a lock-wait timeout at very high concurrency.</li>
+            <li><strong>Adaptive:</strong> run the detector only when some waiter has waited longer than a threshold.</li>
+            <li><strong>Timeout as a backstop:</strong> in case detection misses something, or in distributed settings.</li>
+          </ul>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s1">Part 3, section 1</a> · <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s7">Page 4, section 7</a></p>
+      </article>
+
+      <article class="qa" id="d18">
+        <div class="qa-id">D18</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li>A graph can contain several cycles, disjoint or sharing nodes.</li>
+            <li>Between taking a snapshot and acting on it, transactions keep running. A chosen victim may commit, or may already have been aborted.</li>
+          </ul>
+        </div>
+        <h3 class="q">What if there are several deadlocks at once, or the victim commits between the snapshot and your abort?</h3>
+        <p class="tests"><span class="box-label">Tests</span>Edge cases in the recovery loop.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>Several cycles:</strong> <code>RunCycleDetection</code> loops. Find a cycle, abort one victim, remove it from the graph, search again, until the graph is acyclic. Disjoint cycles each lose one member. If cycles share a node and that node is the victim, one abort breaks both. The loop terminates because every iteration removes a node.</p>
+          <p><strong>Victim committed in the meantime:</strong> this can't happen for a transaction that's genuinely in a cycle, because it's asleep waiting. It could happen if its wait ended while the detector was busy with an earlier victim in the same pass, since an earlier release may have granted it. Then <code>abort()</code>'s CAS finds <code>COMMITTED</code> and returns <code>false</code>. The detector logs "already finished" and still removes the node. The old code didn't remove the node when the lookup failed, so it could have looped on the same cycle forever. That's fixed.</p>
+          <p><strong>Victim already gone:</strong> if the registry lookup returns null, its priority counts as the minimum, so it's picked and simply removed from the graph.</p>
+          <p><strong>Victim already aborted by someone else:</strong> the snapshot builder skips edges involving aborted transactions, and <code>abort()</code> on an aborted transaction just returns <code>true</code>.</p>
+          <p><strong>Victim already restarted:</strong> the dangerous case, the 1,000-thread race (S12).</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/07-part-deadlock-detector.html#s5">Part 3, section 5</a></p>
+      </article>
+
+      <article class="qa" id="d19">
+        <div class="qa-id">D19</div>
+        <div class="prereq">
+          <span class="box-label">Prerequisites</span>
+          <ul>
+            <li><strong>Distributed transaction:</strong> touches data on several nodes, each with its own lock manager.</li>
+            <li><strong>Global deadlock:</strong> a cycle that crosses nodes. Each node's local wait-for graph looks acyclic.</li>
+            <li><strong>Edge chasing</strong> (Chandy–Misra–Haas): a blocked transaction sends a probe along its wait edges. Nodes forward it along their own edges, and if it returns to the initiator, there's a cycle.</li>
+          </ul>
+        </div>
+        <h3 class="q">How would deadlock detection change if the lock manager were distributed across machines?</h3>
+        <p class="tests"><span class="box-label">Tests</span>System design: extending a single-node design to a distributed one.</p>
+        <details class="reveal"><summary></summary>
+        <div class="answer">
+          <span class="box-label">Answer</span>
+          <p><strong>My detector relies on one consistent snapshot of one lock table. Distributed, there's no single table and no instantaneous global snapshot, so the options change.</strong></p>
+          <ol>
+            <li><strong>Centralized global graph:</strong> each node periodically sends its local wait edges to a coordinator, which merges them and searches for cycles. It's simple, but the pieces are from different times, so phantom deadlocks come back unless the coordinator re-verifies edges before aborting. The coordinator is also a bottleneck.</li>
+            <li><strong>Edge chasing:</strong> a transaction blocked for a while sends a probe tagged with its ID to the holder's node, which forwards it along that holder's wait edges. The probe returning to the initiator proves a cycle. There's no global snapshot and it scales well, but it takes messages, and two initiators might pick overlapping victims.</li>
+            <li><strong>Prevention with global timestamps:</strong> wound-wait or wait-die needs no graph at all, only comparable timestamps. Spanner uses wound-wait for this reason.</li>
+            <li><strong>Timeouts:</strong> abort after waiting too long. That's crude, but common in practice as the primary mechanism or a backstop, because it needs no cross-node coordination.</li>
+          </ol>
+          <p>For a real system I'd pick wound-wait with preserved timestamps plus a generous timeout. That also fixes the starvation problem I measured, and avoids the stale-release class of bug, because no asynchronous detector acts on stale information.</p>
+        </div>
+        </details>
+        <p class="review">Review: <a href="../explanations/04-deadlocks-and-wait-for-graphs.html#s2">Page 4, section 2</a></p>
+      </article>
+    </section>
+
+  </main>
+  <div class="pager">
+    <a href="03-throughput-commit-rate.html"><span class="lbl">Back</span>← 3 · Throughput and commit rate</a>
+    <a class="next" href="index.html"><span class="lbl">Next</span>Contents →</a>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Concurrent Transaction Engine · Interview Prep</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="qa.css">
+<style>
+  .toc{ list-style:none; margin:0 0 40px; padding:0; border-left:2px solid var(--rule); }
+  .toc li{ position:relative; padding:16px 0 16px 22px; border-bottom:1px solid var(--rule); max-width:none; margin:0; }
+  .toc li::before{ content:''; position:absolute; left:-7px; top:24px; width:12px; height:12px; border-radius:50%; background:var(--paper); border:2px solid var(--accent); }
+  .toc a{ text-decoration:none; display:block; }
+  .toc a:hover .name{ color:var(--accent); }
+  .toc .num{ font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size:11px; color:var(--accent); text-transform:uppercase; letter-spacing:.08em; display:block; margin-bottom:4px; }
+  .toc .name{ font-family:'Fraunces', Georgia, serif; font-size:20px; font-weight:600; color:var(--ink); }
+  .toc .desc{ font-size:14.5px; color:var(--ink-soft); margin-top:4px; max-width:62ch; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="masthead">
+    <div class="crumb"><span class="here">Interview prep</span></div>
+    <h1 class="title">Concurrent Transaction Engine: interview prep</h1>
+    <p class="dek">76 interviewer questions on the four points of your current CV entry, and nothing else. Each one follows the same format: the prerequisites you need, then the question, then a complete answer hidden until you click. Aimed at SDE/backend and systems interviews.</p>
+  </header>
+  <main>
+
+    <section>
+      <h2>The CV entry these questions target</h2>
+      <p>This is your CV text, verbatim. Several phrases in it aren't supported by the project's evidence. The questions still ask about them, as an interviewer would, and the answers say plainly what holds and what doesn't, with the wording that's safe to say instead.</p>
+      <div class="cv">
+        <p class="cv-title">Concurrent Transaction Engine with 2PL Protocol · Prof K. S. Rao &amp; Prof P. Mitra · [Mar 25 – Jun 25]</p>
+        <p style="margin:0 0 10px">Built a multi-threaded ACID-compliant transaction engine in C++ implementing Strict 2PL and graph-based deadlock detection. <a href="01-engine-acid-strict-2pl.html">E1–E18</a></p>
+        <ul>
+          <li>Built a concurrent transaction manager in C++ with 2-Phase Locking (2PL), guaranteeing ACID serializability across 1,000+ threads. <a href="02-2pl-serializability-threads.html">S1–S21</a></li>
+          <li>Achieved a 6x throughput speedup over single-threaded baseline, sustaining a 100% transaction commit rate under high contention. <a href="03-throughput-commit-rate.html">T1–T18</a></li>
+          <li>Implemented priority scheduling with aging to prevent starvation and eliminated deadlocks via cycle detection on Wait-For Graphs. <a href="04-priority-aging-deadlocks.html">D1–D19</a></li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Each phrase against the evidence</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Phrase</th><th>Verdict</th><th>What the evidence says</th><th>Question</th></tr></thead>
+        <tbody>
+          <tr><td>multi-threaded … in C++</td><td><span class="verdict ok">holds</span></td><td>C++23: mutexes, condition variables, atomics, a detector thread, harnesses with up to 1,000 worker threads</td><td><a href="01-engine-acid-strict-2pl.html#e14">E14</a></td></tr>
+          <tr><td>ACID-compliant</td><td><span class="verdict bad">no</span></td><td>isolation yes; all-or-nothing writes only in the benchmark harness; no durability at all</td><td><a href="01-engine-acid-strict-2pl.html#e5">E5</a></td></tr>
+          <tr><td>Strict 2PL</td><td><span class="verdict ok">holds</span></td><td>every measured workload holds all locks to commit or abort; the API alone allows early release</td><td><a href="01-engine-acid-strict-2pl.html#e9">E9</a></td></tr>
+          <tr><td>graph-based deadlock detection</td><td><span class="verdict ok">holds</span></td><td>periodic wait-for-graph snapshot, DFS, cycle-member victim</td><td><a href="01-engine-acid-strict-2pl.html#e13">E13</a></td></tr>
+          <tr><td>guaranteeing … serializability across 1,000+ threads</td><td><span class="verdict bad">no</span></td><td>100 of 100 runs serializable at ≤ 64 threads; at 1,000 threads 2 of 5 (and 4 of 20) runs weren't, because of a root-caused race</td><td><a href="02-2pl-serializability-threads.html#s11">S11</a></td></tr>
+          <tr><td>6x throughput speedup over single-threaded baseline</td><td><span class="verdict bad">no</span></td><td>no recorded run gives 6×; 7.97× at 8 threads and 53.74× at 64 with 1 ms I/O; 0.24× CPU-only; 2.83× peak under high contention</td><td><a href="03-throughput-commit-rate.html#t3">T3</a></td></tr>
+          <tr><td>100% transaction commit rate under high contention</td><td><span class="verdict warn">misleading</span></td><td>every completed run committed everything, by retrying; up to 79.4% of attempts aborted at 64 threads; 1,000 threads took about 6 h</td><td><a href="03-throughput-commit-rate.html#t12">T12</a></td></tr>
+          <tr><td>priority scheduling with aging</td><td><span class="verdict warn">misnamed</span></td><td>priority only picks deadlock victims; it rises by 1 per abort, in the harness</td><td><a href="04-priority-aging-deadlocks.html#d2">D2</a></td></tr>
+          <tr><td>to prevent starvation</td><td><span class="verdict bad">no</span></td><td>one transaction was aborted 1,980 times</td><td><a href="04-priority-aging-deadlocks.html#d4">D4</a></td></tr>
+          <tr><td>eliminated deadlocks via cycle detection on Wait-For Graphs</td><td><span class="verdict warn">wording</span></td><td>detected and resolved, up to 3,844 times per run; detection can't eliminate</td><td><a href="04-priority-aging-deadlocks.html#d9">D9</a></td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="callout impl">
+        <span class="box-label">Be careful · timeline</span>
+        <p>The CV dates are Mar–Jun 2025. The audit, the bug fixes, the benchmark and every speedup number in these answers come from later work, committed in September 2026. If you quote those numbers, say they came from a later rework of the project.</p>
+      </div>
+    </section>
+
+    <ol class="toc">
+      <li><a href="01-engine-acid-strict-2pl.html"><span class="num">18 questions · E1–E18</span><span class="name">1 · The engine: ACID, strict 2PL, detection</span></a><div class="desc">Walkthrough and architecture, each letter of ACID and what you actually provide, durability and atomicity, 2PL and its variants, where the code holds locks to commit, why detection, C++ primitives, latches vs locks, and your two best bug stories.</div></li>
+      <li><a href="02-2pl-serializability-threads.html"><span class="num">21 questions · S1–S21</span><span class="name">2 · 2PL, serializability, 1,000+ threads</span></a><div class="desc">Conflict vs view serializability, the precedence graph, the proof that 2PL works, your lock table, waiting, grants, upgrades, how you verified serializability, the 1,000-thread race end to end, data races, CAS, mutex ordering, oversubscription and scaling.</div></li>
+      <li><a href="03-throughput-commit-rate.html"><span class="num">18 questions · T1–T18</span><span class="name">3 · Throughput speedup and commit rate</span></a><div class="desc">Benchmark method and baseline, where "6x" does and doesn't come from, why each speedup curve has its shape, thrashing, choosing thread counts, noise, sleep-based I/O, comparability, what "100% commit" means and costs, backoff, livelock and fewer aborts.</div></li>
+      <li><a href="04-priority-aging-deadlocks.html"><span class="num">19 questions · D1–D19</span><span class="name">4 · Priority, aging, starvation and deadlocks</span></a><div class="desc">Starvation vs deadlock vs livelock, what priority controls, whether aging worked, wound-wait and wait-die, priority inversion, Coffman conditions, prevention vs detection, "eliminated", the wait-for graph and its snapshot, DFS vs Kahn vs Tarjan, victims, detection interval, distributed detection.</div></li>
+    </ol>
+
+    <section>
+      <h2>How to use this</h2>
+      <ul>
+        <li><strong>Read the prerequisites, then answer out loud before clicking "Show answer".</strong> The written answer is the target. Hit its points in your own words.</li>
+        <li><strong>Every answer starts with its headline in bold.</strong> In an interview, say that first, then expand only as far as the interviewer wants.</li>
+        <li><strong>The red "Be careful" boxes matter most.</strong> They mark exactly where the CV wording would get you caught, and give a replacement sentence.</li>
+        <li><strong>Numbers come with their conditions.</strong> "53.74× at 64 threads with 1 ms of simulated I/O and rare conflicts" survives follow-ups. "53× faster" doesn't.</li>
+        <li><strong>Review links</strong> point to the matching section of <a href="../explanations/index.html">explanations/</a> for the full derivation and code.</li>
+        <li>Use <strong>Show all answers</strong> at the top of a page for a quick read-through.</li>
+      </ul>
+    </section>
+  </main>
+</div>
+</body>
+</html>

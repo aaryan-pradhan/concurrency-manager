@@ -18,23 +18,23 @@
     <div class="crumb"><a href="index.html">Explanations</a><span class="sep">/</span><span class="here">Part 3 · DeadlockDetector</span></div>
     <span class="stage-tag">Part 3</span>
     <h1 class="title">The DeadlockDetector: wait-for graph, DFS, victim</h1>
-    <p class="dek">A background thread rebuilds the wait-for graph every 100 ms, searches it with DFS and aborts the lowest-priority transaction it finds. It broke every deadlock in every audit run. A unit test against the real class shows it can abort a transaction that isn't in the cycle.</p>
+    <p class="dek">A background thread takes a single-instant snapshot of who waits for whom, finds cycles with depth-first search, and aborts the lowest-priority member of each cycle. This page covers what commit 47e3a19 changed here, the one race that still breaks serializability at 1,000 threads, and what the "aging" really does.</p>
   </header>
   <main>
 
-    <div class="recap"><span class="box-label">Uses</span>condition variables and <code>wait_for</code> from <a href="02-threads-mutexes-condvars.html#s5">page 2, section 5</a> · WFG construction from <a href="04-deadlocks-and-wait-for-graphs.html#s4">page 4, section 4</a> · DFS, back edges and tails from <a href="04-deadlocks-and-wait-for-graphs.html#s5">page 4, section 5</a> · the victim must be a cycle member, from <a href="04-deadlocks-and-wait-for-graphs.html#s6">page 4, section 6</a> · detection delay and phantom deadlocks from <a href="04-deadlocks-and-wait-for-graphs.html#s7">page 4, section 7</a> · aging vs priority scheduling from <a href="04-deadlocks-and-wait-for-graphs.html#s8">page 4, section 8</a> · <code>releaseAllLocks</code> from <a href="06-part-lock-manager.html#s5">Part 2, section 5</a> · the static registry from <a href="05-part-transaction-and-manager.html#s3">Part 1, section 3</a>.</div>
+    <div class="recap"><span class="box-label">Uses</span>condition variables and <code>wait_for</code> from <a href="02-threads-mutexes-condvars.html#s5">page 2, section 5</a> · WFG construction from <a href="04-deadlocks-and-wait-for-graphs.html#s4">page 4, section 4</a> · DFS and back edges from <a href="04-deadlocks-and-wait-for-graphs.html#s5">page 4, section 5</a> · victim selection from <a href="04-deadlocks-and-wait-for-graphs.html#s6">page 4, section 6</a> · detection delay from <a href="04-deadlocks-and-wait-for-graphs.html#s7">page 4, section 7</a> · starvation and aging from <a href="04-deadlocks-and-wait-for-graphs.html#s8">page 4, section 8</a> · CAS-based <code>abort()</code> from <a href="05-part-transaction-and-manager.html#s2">Part 1, section 2</a> · the registry, and that an ID doesn't name one attempt, from <a href="05-part-transaction-and-manager.html#s3">Part 1, section 3</a> · restart under the same ID from <a href="05-part-transaction-and-manager.html#s4">Part 1, section 4</a> · <code>releaseAllLocks</code> from <a href="06-part-lock-manager.html#s5">Part 2, section 5</a> · <code>getWaitForEdges</code> from <a href="06-part-lock-manager.html#s7">Part 2, section 7</a>.</div>
 
     <section>
       <div class="spec-quote">
-        <span class="box-label">include/deadlock_detector.h · class and method comments</span>
-        <blockquote>"DeadlockDetector - Implements a wait-for graph and cycle detection algorithm to detect and resolve deadlocks between transactions. […] Looks for a cycle using DFS algorithm. If it finds a cycle, stores the transaction id of the minimum priority transaction in the cycle in txn_id and returns true. […] Runs cycle detection in the background. Builds the wait-for graph on the fly and breaks any cycles by aborting the minimum priority transaction in each cycle."</blockquote>
+        <span class="box-label">include/deadlock_detector.h · class and method comments (current)</span>
+        <blockquote>"DeadlockDetector - Implements a wait-for graph and cycle detection algorithm to detect and resolve deadlocks between transactions. […] Looks for a cycle using DFS. If it finds one, stores in txn_id the member of that cycle with the lowest priority (ties: the highest transaction id) and returns true. Only nodes on the cycle itself are candidates, never nodes merely waiting on it. […] Runs one detection pass: builds the wait-for graph from a consistent lock-table snapshot and breaks every cycle by aborting one victim per cycle."</blockquote>
       </div>
-      <p>The comment makes three promises. "Wait-for graph … on the fly" is section 2, "cycle detection … using DFS" is section 3, and "the minimum priority transaction in the cycle" is section 4. Section 4 tests that last phrase directly against the class.</p>
+      <p>The comment makes four promises. "A consistent lock-table snapshot" is section 2. "Cycle detection using DFS" is section 3. "The member of that cycle with the lowest priority" is section 4. "Breaks every cycle" is section 5. Section 6 is the one situation where "breaking" a cycle damages a different transaction.</p>
     </section>
 
     <section>
       <h2 id="s1">1. The background thread</h2>
-<pre><code>// src/deadlock_detector.cpp:360-377, 19-38
+<pre><code>// src/deadlock_detector.cpp:293-310, 20-39 (abridged)
 void DeadlockDetector::DetectionThread() {
     while (running_) {
         RunCycleDetection();
@@ -42,153 +42,195 @@ void DeadlockDetector::DetectionThread() {
         cv_.wait_for(lock, std::chrono::milliseconds(detection_interval_ms_), [this]{ return !running_; });
     }
 }
-// destructor: running_ = false; cv_.notify_one(); detection_thread_.join();</code></pre>
-      <p>The detector sleeps between passes using <code>wait_for</code> with a predicate, so shutdown wakes it at once instead of waiting out the interval. <code>ConcurrencyManager</code> defaults to 200 ms and the harness passes 100 ms. By page 4, section 7, a deadlock therefore sits for about 50 ms plus one pass on average, and up to about 100 ms plus one pass, before anyone acts.</p>
-    </section>
-
-    <section>
-      <h2 id="s2">2. BuildWaitForGraph: a 10,000-ID scan, one latch grab at a time</h2>
-<pre><code>// src/deadlock_detector.cpp:272-339 (abridged)
-wait_for_graph_.clear();
-for (int resource_id = 0; resource_id &lt; 10000; resource_id++) {
-    auto waiters = lock_manager_.getWaitingTransactions(resource_id);   // locks LockManager::mtx
-    if (waiters.empty()) continue;
-    auto holders = lock_manager_.getLockHolders(resource_id);           // locks it again
-    for (auto w : waiters)  /* skip aborted */
-        for (auto h : holders) if (h != w /* and not aborted */) AddEdge(w, h);   // waiter -&gt; holder
-}</code></pre>
-      <p>Edges go from each waiter to every holder of the same resource. With barging (Part 2, section 2), holders are the only thing that can block a waiter, so this matches page 4, section 4.</p>
-      <div class="callout impl">
-        <span class="box-label">In the code · three costs of scanning IDs instead of the table</span>
-        <ul>
-          <li><strong>Latch traffic:</strong> each pass takes and releases <code>LockManager::mtx</code> at least 10,000 times, even though the harness only ever uses resource IDs 1–26 (<code>test.txt</code>) or 1–12 (<code>dead_test.txt</code>). At roughly 10 passes per second that's at least 100,000 latch acquisitions per second, all contending with the transaction threads.</li>
-          <li><strong>A hidden ceiling:</strong> a resource with ID ≥ 10,000 is never inspected, so a deadlock on it would never be broken, and (with no lock timeout, Part 2, section 8) its transactions would wait forever.</li>
-          <li><strong>No consistent snapshot:</strong> the table changes between per-ID calls, so the graph can include edges that are already gone (page 4, section 7). An abort based on such an edge is a phantom-deadlock abort. The audit didn't measure how often that happens.</li>
-        </ul>
+// destructor: { lock cv_mutex_; running_ = false; cv_.notify_one(); }  detection_thread_.join();</code></pre>
+      <p>The detector sleeps between passes using <code>wait_for</code> with a predicate, so shutdown wakes it at once instead of waiting out the interval. The interval \(I\) is 200 ms by default in <code>ConcurrencyManager</code>, 100 ms in the text harness and 10 ms in the benchmark.</p>
+      <div class="eq">
+        \[ t_{\text{pass}} \;\le\; \text{delay} \;\le\; I + t_{\text{pass}}, \qquad \mathbb{E}[\text{delay}] \approx \frac{I}{2} + t_{\text{pass}} \]
+        <p class="note">"Delay" is the time from a deadlock forming to its victim being aborted. \(I\) is the sleep between passes, and \(t_{\text{pass}}\) is how long one pass takes. The average assumes deadlocks form at uniformly random moments between passes. No run measured \(t_{\text{pass}}\).</p>
+      </div>
+      <div class="worked">
+        <span class="box-label">Worked example · 100 ms vs 10 ms</span>
+        <p>Text harness, \(I = 100\): a deadlock waits about \(100/2 = 50\) ms on average, and up to 100 ms, plus one pass. Benchmark, \(I = 10\): about 5 ms on average, and up to 10 ms. Every one of those milliseconds, the deadlocked transactions keep holding their locks, so everyone queued behind them waits too. The cost of a shorter interval is that each pass takes the lock-table mutex and scans the whole table, which steals latch time from real transactions ten times as often.</p>
       </div>
     </section>
 
     <section>
-      <h2 id="s3">3. HasCycle and DFS</h2>
-<pre><code>// src/deadlock_detector.cpp:136-175 (abridged)
-std::sort(nodes.begin(), nodes.end());                    // deterministic root order
-for (node : nodes) if (!visited[node]) {
-    txn_id_t current_min_priority_txn = node;             // seed = the DFS root
-    if (DFS(node, visited, in_stack, current_min_priority_txn)) { keep lowest across roots; cycle_found = true; }
-}
-
-// src/deadlock_detector.cpp:82-134 (abridged)
-bool DFS(node, visited, in_stack, min_priority_txn) {
-    visited[node] = in_stack[node] = true;
-    for (neighbor : wait_for_graph_[node]) {
-        if (!visited[neighbor]) {
-            if (DFS(neighbor, ...)) { if (prio(node) &lt; prio(min_priority_txn)) min_priority_txn = node; return true; }
-        } else if (in_stack[neighbor]) {
-            if (prio(node) &lt; prio(min_priority_txn)) min_priority_txn = node;  return true;
-        }
-    }
-    in_stack[node] = false;  return false;
+      <h2 id="s2">2. BuildWaitForGraph: one snapshot of a single instant</h2>
+<pre><code>// src/deadlock_detector.cpp:254-271 (abridged)
+wait_for_graph_.clear();
+for (auto [waiter_id, holder_id] : lock_manager_.getWaitForEdges()) {   // one mtx acquisition
+    auto waiter = Transaction::GetTransaction(waiter_id);
+    auto holder = Transaction::GetTransaction(holder_id);
+    if (!waiter || waiter-&gt;getState() == ABORTED || !holder || holder-&gt;getState() == ABORTED) continue;
+    AddEdgeInternal(waiter_id, holder_id);                                // waiter -&gt; holder
 }</code></pre>
-      <p>This is the three-state DFS from page 4, section 5, and it's \(O(V + E)\) per call. It stops at the first back edge.</p>
+      <p>The graph is rebuilt from scratch on every pass, from the snapshot in Part 2, section 7. Edges that involve a transaction already marked <code>ABORTED</code> are skipped, because that transaction's locks are about to be released anyway.</p>
+      <p><strong>Why a cycle in this snapshot is a real deadlock.</strong> Each edge W→H means W is asleep waiting for a lock that H holds, and a sleeping transaction releases nothing. The lock manager also keeps an invariant: every code path that could make a pending request grantable (<code>releaseLock</code>, <code>releaseAllLocks</code>) grants it before unlocking <code>mtx</code>. So at the instant of the snapshot, no pending request was grantable. If every member of a cycle waits on the next, none of them can release, and none can proceed. The cycle can't dissolve by itself, so aborting a member is never wasted on a <em class="term">phantom deadlock</em>, meaning a cycle that exists only because edges were read at different times.</p>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · a 10,000-ID scan</span>
+        <p><strong>Before:</strong> <code>for (int resource_id = 0; resource_id &lt; 10000; resource_id++)</code>, calling <code>getWaitingTransactions(id)</code> and then <code>getLockHolders(id)</code>, each taking and releasing <code>mtx</code>. That caused three problems. It took at least 10,000 latch acquisitions per pass, although the text workloads only use IDs 1–26. It never inspected resource IDs ≥ 10,000, so deadlocks on them were never broken. And the table changed between calls, so the graph could mix edges from different moments, which allowed phantom deadlocks. <strong>After:</strong> one <code>getWaitForEdges()</code> call under a single acquisition.</p>
+      </div>
     </section>
 
     <section>
-      <h2 id="s4">4. Victim selection: the minimum over the search path, not the cycle</h2>
-      <p>Two details decide who gets aborted. The running minimum is <strong>seeded with the DFS root</strong>. As the recursion unwinds after a back edge, it compares <strong>every node on the path</strong> from the root down, including nodes before the cycle begins. The comparison is a strict <code>&lt;</code>. The victim is therefore the lowest-priority node on the whole search path, tail included, and if the root ties for lowest, the root is kept.</p>
-      <div class="callout result">
-        <span class="box-label">Result · unit test of the real DeadlockDetector class (audit scratch program)</span>
-        <p>Transactions were registered with the given priorities, edges added with <code>AddEdge</code>, and <code>HasCycle</code> called directly. The background pass was held off with a very long interval.</p>
+      <h2 id="s3">3. FindCycle: DFS that keeps its path</h2>
+<pre><code>// src/deadlock_detector.cpp:90-125 (abridged)
+bool FindCycle(node, visited, in_stack, path, cycle) {
+    visited[node] = in_stack[node] = true;
+    path.push_back(node);
+    for (neighbor : wait_for_graph_[node]) {
+        if (!visited[neighbor]) {
+            if (FindCycle(neighbor, visited, in_stack, path, cycle)) return true;
+        } else if (in_stack[neighbor]) {                        // back edge node -&gt; neighbor
+            cycle.assign(find(path, neighbor), path.end());     // the segment neighbor..node
+            return true;
+        }
+    }
+    in_stack[node] = false;  path.pop_back();
+    return false;
+}
+// HasCycleInternal (133-184): try unvisited roots in sorted ID order, stop at the first cycle</code></pre>
+      <p>This is the three-state DFS from page 4, section 5, with one addition. It keeps the current root-to-node path, so on a back edge it can cut out exactly the nodes that form the cycle. Nodes earlier on the path only wait <em>on</em> the cycle (page 4, section 6 calls them the tail). One search is \(O(V + E)\), for \(V\) waiting or holding transactions and \(E\) wait edges. Roots are sorted, so the same graph always gives the same answer.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · the graph from tests/test_correctness.cpp:65-90</span>
+        <p>Edges T1→T2, T2→T3, T3→T2. Sorted roots are [1, 2, 3]. Start at T1: path [1]. Go to T2: path [1, 2]. Go to T3: path [1, 2, 3]. T3's neighbour T2 is visited and still on the stack, so 3→2 is a back edge. The cycle is the path from T2 onward: [2, 3]. T1 is a tail: it waits on the deadlock but isn't part of it, and aborting it would break nothing.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s4">4. Victim selection: lowest priority within the cycle</h2>
+<pre><code>// src/deadlock_detector.cpp:160-177 (abridged)
+txn_id_t victim = cycle.front();  int victimPriority = INT_MAX;
+for (txn_id_t member : cycle) {
+    auto txn = Transaction::GetTransaction(member);
+    int priority = txn ? txn-&gt;getPriority() : INT_MIN;          // vanished txn: drop it first
+    if (priority &lt; victimPriority || (priority == victimPriority &amp;&amp; member &gt; victim)) {
+        victim = member;  victimPriority = priority;
+    }
+}</code></pre>
+      <p>The victim is the cycle member with the lowest priority number. Ties go to the highest ID, and in both harnesses IDs are handed out in increasing order, so a tie usually picks a transaction that started later. A member that no longer exists sorts first, so it's simply removed from the graph.</p>
+      <div class="worked">
+        <span class="box-label">Worked example · the two cases in the regression test</span>
+        <p><strong>Equal priorities (all 1):</strong> the cycle is [2, 3], so the tie goes to the higher ID, T3. The recorded test log shows <code>Deadlock cycle detected: T2 T3 -&gt; victim T3 (priority: 1)</code>. <strong>T1 = 0, T2 = 5, T3 = 1:</strong> T1 has the lowest priority overall, but it's a tail, so it isn't a candidate. Among {T2 = 5, T3 = 1}, T3 is lowest, so T3 is the victim. Both checks passed in the recorded <code>make test</code> run.</p>
+      </div>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · victims chosen from the whole search path</span>
+        <p><strong>Before:</strong> the running minimum was seeded with the DFS root and updated at every node as the recursion unwound, including nodes before the cycle began. The victim was the lowest-priority node on the whole path, tail included. An audit unit test against the old class showed it:</p>
         <div class="tbl-wrap">
         <table>
-          <thead><tr><th>Graph</th><th>Priorities</th><th>Cycle</th><th>Victim</th><th>In cycle?</th></tr></thead>
+          <thead><tr><th>Graph</th><th>Priorities</th><th>Cycle</th><th>Old victim</th><th>In cycle?</th></tr></thead>
           <tbody>
             <tr class="hi"><td>T1→T2, T2→T3, T3→T2</td><td>all 1</td><td>{T2, T3}</td><td>T1</td><td>no</td></tr>
             <tr><td>same</td><td>T1=5, T2=1, T3=1</td><td>{T2, T3}</td><td>T3</td><td>yes</td></tr>
-            <tr><td>same</td><td>T1=1, T2=1, T3=0</td><td>{T2, T3}</td><td>T3</td><td>yes</td></tr>
             <tr><td>T4⇄T5</td><td>both 1</td><td>{T4, T5}</td><td>T4</td><td>yes</td></tr>
-            <tr><td>T4⇄T5</td><td>T4=2, T5=1</td><td>{T4, T5}</td><td>T5</td><td>yes</td></tr>
           </tbody>
         </table>
         </div>
-      </div>
-      <p><strong>What this supports.</strong> With equal priorities, which is every transaction's state on its first attempt (priority 1), the detector can abort a tail transaction that is merely waiting on a deadlock. By page 4, section 6 that abort doesn't break the cycle, so the loop in section 5 must abort again. Even with priorities in play, a lower-priority tail node would be chosen over the cycle members. <strong>What it doesn't.</strong> The audit didn't count how many of the 2,843–6,731 restarts per run were tail aborts, because the detector doesn't log the graph at the default INFO level. So the effect on restart counts is unquantified.</p>
-      <div class="callout impl">
-        <span class="box-label">In the code · the fix</span>
-        <p>On a back edge from <code>node</code> to <code>neighbor</code>, take the stack segment from <code>neighbor</code> to <code>node</code> as the cycle, and choose the victim only among those members. Break ties deterministically, for example by the youngest start time or the fewest locks held.</p>
+        <p>Aborting a tail breaks no cycle (page 4, section 6), so the old loop had to abort again. Every transaction starts with priority 1, so the highlighted case was the common one. <strong>After:</strong> candidates come only from the extracted cycle.</p>
       </div>
     </section>
 
     <section>
-      <h2 id="s5">5. RunCycleDetection: abort, remove, search again</h2>
-<pre><code>// src/deadlock_detector.cpp:191-253 (abridged)
+      <h2 id="s5">5. RunCycleDetection: abort, release, remove, repeat</h2>
+<pre><code>// src/deadlock_detector.cpp:186-234 (abridged)
+std::lock_guard&lt;std::mutex&gt; run(run_mutex_);     // one pass at a time (thread or checkForDeadlocks)
+std::lock_guard&lt;std::mutex&gt; lock(graph_mutex_);
 BuildWaitForGraph();
-while (true) {
-    txn_id_t min_priority_txn;
-    if (!HasCycle(min_priority_txn)) break;
-    Transaction *txn = Transaction::GetTransaction(min_priority_txn);
-    if (txn != nullptr) {
-        txn-&gt;abort();                                   // state = ABORTED (unsynchronized write)
-        lock_manager_.releaseAllLocks(min_priority_txn); // pre-grants waiters, notify_all
-        remove min_priority_txn and all edges into it from wait_for_graph_;
+while (HasCycleInternal(victimId)) {
+    auto txn = Transaction::GetTransaction(victimId);
+    if (txn != nullptr &amp;&amp; txn-&gt;abort()) {                       // line 205: CAS to ABORTED
+        logger_.warning("Aborting transaction T" + id + " ...");  // line 207
+        lock_manager_.releaseAllLocks(victimId);                  // line 212
     } else {
-        logger_.error("Failed to find transaction ...");   // node NOT removed
+        logger_.info("Deadlock victim T" + id + " already finished; removing it ...");
     }
+    remove victimId and every edge into it from wait_for_graph_;
 }</code></pre>
-      <p>Looping until no cycle remains handles several deadlocks in one pass, and it also cleans up after a wasted tail abort (section 4). The victim's own thread notices at its next check: its wait predicate returns because it's <code>ABORTED</code>, <code>waitForLock</code> returns <code>false</code>, and the harness restarts it (<a href="08-part-harness-and-metrics.html#s4">Part 4, section 4</a>).</p>
-      <div class="callout impl">
-        <span class="box-label">In the code · two latent hazards</span>
+      <p>One pass breaks every cycle it can find. Each loop iteration removes at least one node, and the graph is finite, so the loop runs at most \(V\) times. The victim's worker thread finds out through its wait predicate: branch (a) of Part 2, section 4 fires, <code>acquireLock</code> returns <code>false</code>, and the harness restarts the transaction under the same ID with priority + 1. If the victim committed between the snapshot and the abort, <code>abort()</code> returns <code>false</code> (Part 1, section 2), and its locks are already being released by its own commit.</p>
+      <div class="callout fix">
+        <span class="box-label">commit 47e3a19 · bug hit and fixed · a possible endless loop</span>
+        <p><strong>Before:</strong> if the victim had already been destroyed, <code>GetTransaction</code> returned <code>nullptr</code>, the node stayed in the graph, and <code>HasCycle</code> found the same cycle forever. The audit never observed this. <strong>After:</strong> the node is removed whether or not the abort happened.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 id="s6">6. The remaining race: a late release hits the restarted transaction</h2>
+      <p>Lines 205 and 212 aren't atomic together. Between them, the detector logs a warning, which takes the logger's mutex and flushes a file, and then it must win <code>LockManager</code>'s one mutex against every worker thread. If the detector stalls there for longer than the victim takes to back off and restart, the release lands on the wrong transaction:</p>
+<pre><code>detector thread                              victim's worker thread (ID 17)
+snapshot has cycle T17 -&gt; T42 -&gt; T17
+T17.abort()   state = ABORTED        (205)
+logger_.warning("Aborting T17 ...")  (207)   woken by some other release's notify_all,
+   ... stalled: descheduled, or                sees ABORTED, acquireLock returns false
+   waiting for LockManager::mtx ...            benchmark backoff: 1.4-2.6 ms
+                                               beginTransaction(..., 17, ...):
+                                                 releaseAllLocks(17)   old attempt's locks freed
+                                                 registers a NEW Transaction with ID 17
+                                               new T17 gets X on item 5, starts 1 ms of "I/O"
+releaseAllLocks(17)                  (212)
+   removes the NEW T17's X on item 5
+   grantWaitersInternal: X on item 5 -&gt; T42
+                                               new T17 installs its write to item 5,
+                                               while T42 also holds X on item 5</code></pre>
+      <p>Two transactions now hold X on the same item at overlapping times, so their operations can interleave in both orders, and the committed schedule can contain a precedence-graph cycle. The root cause is Part 1, section 3's warning: <code>releaseAllLocks</code> takes an ID, and by the time it runs, that ID names a different attempt.</p>
+      <div class="callout result">
+        <span class="box-label">Result · evidence for the race (benchmark config B, 1,000 threads: 1,000 txns × 4 ops, 1,000 items, 20% writes, 1 ms per op)</span>
         <ul>
-          <li><strong>A possible endless loop:</strong> if the chosen victim has already been destroyed (it committed after the graph was built), <code>GetTransaction</code> returns <code>nullptr</code>, and the node stays in the graph. <code>HasCycle</code> then finds the same cycle every time round. Not observed in audit runs.</li>
-          <li><strong>The abort bypasses the facade:</strong> the detector sets the state and releases locks, but <code>ConcurrencyManager</code> isn't told, and the victim stays in its map until the harness restarts it under the same ID. If the victim was no longer waiting (a stale edge), it finds out only at its next operation.</li>
+          <li><strong>Sweep, <code>benchmark_results/results.csv</code>, 5 runs:</strong> runs 1 and 3 failed the serializability check. 3 and 101 transactions respectively couldn't be placed in any serial order. The lost-update check passed in all 5.</li>
+          <li><strong>Instrumented reproduction</strong> (earlier session's scratchpad: same config, -O2, 20 runs, with the repo's behaviour plus counters): 12 of 20 runs had at least one detector release that found granted locks belonging to a <em>newer</em> attempt (20 such locks in total), and <strong>4 of 20 runs</strong> failed the serializability check.</li>
+          <li><strong>Same reproduction, with the detector skipping the release when the registry now holds a different object for that ID:</strong> the skip triggered 20 times across 14 runs, and <strong>0 of 20 runs</strong> failed. Median throughput was 2,475.8 txn/s with the repo's behaviour and 2,372.5 with the skip, a difference well within run-to-run noise at this thread count.</li>
+          <li><strong>At 64 threads or fewer:</strong> 0 failures in the 100 recorded runs across the three benchmark configurations (<a href="09-results-and-takeaways.html#s5">results, section 5</a>).</li>
         </ul>
       </div>
-    </section>
-
-    <section>
-      <h2 id="s6">6. Where the "aging" actually lives</h2>
-      <p>The detector only <em>reads</em> priorities. Nothing in <code>src/</code> ever changes one after <code>beginTransaction</code>. The raising happens in the test harness, which increments a local <code>priority</code> each time its transaction is aborted and passes it to the restart:</p>
-<pre><code>// tests/test_deadlock_detection.cpp:370-384 (READ case; WRITE is the same)
-if (cm.getTransactionState(txnId) == TransactionState::ABORTED) {
-    recordTxnRestart(txnNum);
-    i = -1;                       // restart from the first operation
-    priority++;                   // aged: less likely to be the next victim
-    int backoff = calculateBackoff(priority);
-    std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
-}</code></pre>
-      <p>That's aging by restart count, \(p_k = 1 + k\) (page 4, section 8), applied to <strong>victim selection only</strong>. Lock grants ignore priority (Part 2, section 2), so it isn't priority scheduling, and a newcomer can still barge past an aged waiter. Section 4's search-path rule also weakens it, because an aged transaction's priority protects it only when every lower-priority node on the search path happens to be a cycle member.</p>
-    </section>
-
-    <section>
-      <h2 id="s7">7. Two graphs, one used</h2>
-      <p><code>ResourceAllocationGraph::detectDeadlock()</code> implements a correct DFS over request and assignment edges, returning the cycle path with resources encoded as negative numbers. Nothing calls it on a schedule. It was meant to be driven by <code>ConcurrencyManager::checkForDeadlocks()</code> from <code>src/2pl_test_runner.cpp</code>, and that method was never defined. All automatic detection comes from <code>DeadlockDetector</code>'s separately built WFG. Because pre-granted waits don't add assignment edges (Part 2, section 5), the RAG would have drifted from the lock table anyway.</p>
-    </section>
-
-    <section>
-      <h2 id="s8">8. Did it work?</h2>
-      <div class="callout result">
-        <span class="box-label">Result · reordered build, all audit runs</span>
-        <div class="tbl-wrap">
-        <table>
-          <thead><tr><th>File</th><th>Deadlock shape</th><th class="num">Restarts</th><th class="num">Max restarts, one txn</th><th>Finished?</th></tr></thead>
-          <tbody>
-            <tr><td><code>test4.txt</code></td><td>2-cycle</td><td class="num">1</td><td class="num">1</td><td>yes, 2/2 committed</td></tr>
-            <tr><td><code>test5.txt</code></td><td>3-cycle</td><td class="num">2</td><td class="num">1</td><td>yes, 3/3</td></tr>
-            <tr><td><code>test1.txt</code></td><td>upgrade deadlock</td><td class="num">1</td><td class="num">1</td><td>yes, 2/2</td></tr>
-            <tr><td><code>test6.txt</code></td><td>none</td><td class="num">0</td><td class="num">0</td><td>yes, 2/2</td></tr>
-            <tr><td><code>test.txt</code> ×2</td><td>random, upgrades</td><td class="num">2,843 · 2,953</td><td class="num">6 · 6</td><td>yes, 1,000/1,000 each</td></tr>
-            <tr><td><code>dead_test.txt</code> ×2</td><td>alternating order</td><td class="num">6,701 · 6,731</td><td class="num">8 · 9</td><td>yes, 1,000/1,000 each</td></tr>
-          </tbody>
-        </table>
-        </div>
+      <p><strong>What this supports.</strong> The instrumentation ties the failures to this mechanism: stale releases happened in the failing runs, and removing them removed the failures. <strong>What it doesn't.</strong> 4 of 20 against 0 of 20 is small-sample evidence (results, section 9 works out the uncertainty), and why the race needs 1,000 threads to show up is an inference: with 1,000 runnable threads on 8 cores, a thread being descheduled for milliseconds is routine. The fix isn't in the repo.</p>
+      <div class="callout impl">
+        <span class="box-label">In the code · the fix</span>
+        <p>Make the release name the attempt, not just the ID. Pass the aborted <code>Transaction</code> object (or an incarnation counter) to <code>releaseAllLocks</code> and skip the release if the registry now holds a different object. That's exactly what the scratch fix did. Alternatives: give every restart a fresh ID, or mark the victim aborted and release its locks inside the same <code>LockManager</code> critical section.</p>
       </div>
-      <p><strong>What this supports.</strong> Detection plus recovery kept every run live: no run hung, and every transaction eventually committed. <strong>What it doesn't.</strong> Deadlocks were not "eliminated" or prevented. They formed thousands of times (every restart above is a deadlock abort) and were broken by aborting work. The results also don't show that each abort was necessary (tail victims, phantom edges), or that recovery was fast. Part 4 shows what the restarts cost in latency.</p>
     </section>
 
-    <div class="recap"><span class="box-label">Carried forward</span>100 ms periodic detection and its delay (§1) · the 0–9,999 ID scan: latch traffic, ceiling, non-atomic snapshot (§2) · DFS with sorted roots (§3) · the victim is the minimum over the search path with the root seed, so tail aborts are possible, per the unit-test table (§4) · abort-remove-repeat, the null-victim loop, abort bypassing the facade (§5) · aging is <code>priority++</code> in the harness, used for victim choice only (§6) · the RAG detector is unused (§7) · every run finished, with 2.8k–6.7k deadlock aborts on the 1,000-transaction files (§8).</div>
+    <section>
+      <h2 id="s7">7. Where the "aging" actually lives</h2>
+      <p>The detector only <em>reads</em> priorities. Nothing in <code>src/</code> changes one after <code>beginTransaction</code>. The raising happens in the harnesses, which increment a local <code>priority</code> each time their transaction is aborted and pass it to the restart:</p>
+<pre><code>// tests/test_deadlock_detection.cpp:372-386 (READ; WRITE and COMMIT paths are the same)
+if (cm.getTransactionState(txnId) == TransactionState::ABORTED) {
+    recordTxnRestart(txnNum);  i = -1;  priority++;
+    std::this_thread::sleep_for(std::chrono::milliseconds(calculateBackoff(priority)));
+}
+// tests/benchmark.cpp:246-250
+aborts++;  attempt++;  priority++;  sleep for backoff(attempt) with jitter;</code></pre>
+      <p>That's aging by restart count, \(p_k = 1 + k\) after \(k\) aborts (page 4, section 8), and it affects <strong>victim selection only</strong>. Lock grants ignore priority (Part 2, sections 2 and 5), so an aged transaction can still wait behind newcomers and get pulled into fresh cycles. Aging also only helps relative to the other members of a cycle. When every member has been aborted many times, one of them still has to die.</p>
+      <div class="callout result">
+        <span class="box-label">Result · priorities reached in benchmark config C (1,000 txns, 20 items, 30% writes, 1 ms per op), from benchmark_results/logs/io1ms_high_engine.log</span>
+        <p><strong>64 threads, 5 runs:</strong> 3,629–3,979 aborts per run, and the highest priority any transaction reached per run was 10, 19, 12, 10 and 11. So in one run a single transaction was aborted 18 times. <strong>1,000 threads, run 0:</strong> 220,943 aborts between the first and last logged abort, about 5 h 58 min apart, and the highest priority reached was <strong>1,981</strong>: one transaction was aborted 1,980 times. Run 1 was killed after about 2 h 22 min and 175,970 aborts, with a maximum priority of 577.</p>
+      </div>
+      <p><strong>What this supports.</strong> Aging did not prevent starvation under heavy contention. Some transactions were aborted hundreds to thousands of times. <strong>What it doesn't.</strong> Those 1,000-thread runs were also exposed to the section 6 race, and the log can't separate its effect. A scheme with a real guarantee keeps each transaction's <em>original</em> timestamp across restarts and never aborts the oldest, as wait-die and wound-wait do (page 4, section 2).</p>
+    </section>
+
+    <section>
+      <h2 id="s8">8. Two graphs, one used</h2>
+      <p><code>ResourceAllocationGraph::detectDeadlock()</code> implements a correct DFS over request and assignment edges. It returns the cycle path, encoding resources as negative numbers. Nothing calls it during a run. <code>ConcurrencyManager::checkForDeadlocks()</code>, which was undefined until 47e3a19, now runs one <code>DeadlockDetector</code> pass instead. All automatic detection comes from the wait-for graph on this page. The RAG is kept for tracing: it's what the text harness writes to <code>rag_log.txt</code>.</p>
+    </section>
+
+    <section>
+      <h2 id="s9">9. Did it work?</h2>
+      <div class="callout result">
+        <span class="box-label">Result · recorded runs</span>
+        <ul>
+          <li><strong>Regression test, end to end</strong> (<code>tests/test_correctness.cpp:93-107</code>): two transactions, each holding one X and requesting the other's. Exactly one was aborted and the survivor committed (recorded <code>make test</code> run).</li>
+          <li><strong>Benchmark, every completed run:</strong> all transactions committed, which the benchmark requires before it prints "all runs serializable". That covers 70 CSV rows (configs A and B), config C at 1–64 threads (35 runs), and the <code>make test</code> quick check (6 runs).</li>
+          <li><strong>Cost under contention (config C):</strong> 8, 23, 96, 433, 1,479 and 3,844 aborts per run at 2, 4, 8, 16, 32 and 64 threads. Every one is a deadlock victim, because nothing else aborts transactions in the benchmark.</li>
+          <li><strong>Config C at 1,000 threads:</strong> never finished in usable time (section 7).</li>
+          <li><strong>Pre-fix text harness</strong> (not re-measured since the fix): every run finished, with 2,843–2,953 restarts on <code>test.txt</code> and 6,701–6,731 on <code>dead_test.txt</code>.</li>
+        </ul>
+      </div>
+      <p><strong>What this supports.</strong> Detection plus recovery kept every run up to 64 threads live, and every transaction eventually committed. <strong>What it doesn't.</strong> Deadlocks weren't prevented or "eliminated". They formed thousands of times and were broken by throwing work away. Recovery wasn't bounded in time at 1,000 threads, and it didn't stop individual transactions from starving.</p>
+    </section>
+
+    <div class="recap"><span class="box-label">Carried forward</span>periodic detection and its delay, about \(I/2\) on average (§1) · a single-instant snapshot: its cycles are real deadlocks (§2) · DFS that extracts the exact cycle (§3) · victim = lowest priority within the cycle, ties to the highest ID (§4) · abort-release-remove, looping until no cycle remains (§5) · the late-release race at 1,000 threads, with its evidence (4 of 20 vs 0 of 20) and fix (§6) · aging is <code>priority++</code> in the harness, for victim choice only; max priority 1,981 (§7) · the RAG detector is unused (§8) · every run up to 64 threads committed everything, at a cost of up to 3,844 aborts per run (§9).</div>
   </main>
   <div class="pager">
     <a href="06-part-lock-manager.html"><span class="lbl">Back</span>← Part 2 · LockManager</a>
-    <a class="next" href="08-part-harness-and-metrics.html"><span class="lbl">Next</span>Part 4 · Harness, workloads and metrics →</a>
+    <a class="next" href="08-part-harness-and-metrics.html"><span class="lbl">Next</span>Part 4 · Harnesses, workloads and metrics →</a>
   </div>
 </div>
 </body>

@@ -76,8 +76,8 @@
       <h2 id="s4">4. Self-deadlock and the recursive mutex</h2>
       <p>A thread that tries to lock a <code>std::mutex</code> it already holds waits for itself forever (formally, this is undefined behaviour). A <code>std::recursive_mutex</code> counts how many times its owner has locked it and releases only when that count returns to zero, so a method holding it can call another method that locks it again.</p>
       <div class="callout impl">
-        <span class="box-label">In the code · one recursive mutex, and one latent self-deadlock</span>
-        <p><code>ResourceAllocationGraph</code> uses a <code>recursive_mutex</code> because <code>addAssignmentEdge</code> calls <code>removeRequestEdge</code>, and both lock it. <code>Logger</code> uses a plain <code>std::mutex</code>, but <code>Logger::setLogLevel</code> and <code>setConsoleOutput</code> lock it and then call <code>info()</code>, which locks it again (<code>src/logger.cpp:192–202</code>). Either call would hang its thread. Nothing in the repo calls them, so it never happens in practice.</p>
+        <span class="box-label">In the code · one recursive mutex, and a self-deadlock that was fixed</span>
+        <p><code>ResourceAllocationGraph</code> uses a <code>recursive_mutex</code> because <code>addAssignmentEdge</code> calls <code>removeRequestEdge</code>, and both lock it. <code>Logger</code> uses a plain <code>std::mutex</code>. Until commit 47e3a19, <code>Logger::setLogLevel</code> and <code>setConsoleOutput</code> locked it and then called <code>info()</code>, which locked it again, so either call would have hung its thread. Nothing in the repo called them. The fix dropped the outer lock and made both fields <code>std::atomic</code> (<code>src/logger.cpp:192–202</code>).</p>
       </div>
     </section>
 
@@ -134,7 +134,7 @@ cv.notify_all();                       // or notify_one()</code></pre>
 };</code></pre>
       <div class="worked">
         <span class="box-label">Worked example · why the same bug crashes on macOS and not (likely) on Linux</span>
-        <p>An object with static storage (a global) is zero-filled before its constructor runs. If code locks a <code>std::mutex</code> member before that member is constructed, the mutex's bytes are all zero. On Linux/glibc, the "unlocked mutex" initializer is itself all zeros, so the lock usually just works by luck. On macOS, a valid mutex must carry a non-zero signature, so <code>pthread_mutex_lock</code> returns <code>EINVAL</code> and libc++ throws <code>std::system_error: mutex lock failed: Invalid argument</code>. That's the exact message the project's harness prints at startup on macOS (<a href="05-part-transaction-and-manager.html#s7">Part 1, section 7</a>).</p>
+        <p>An object with static storage (a global) is zero-filled before its constructor runs. If code locks a <code>std::mutex</code> member before that member is constructed, the mutex's bytes are all zero. On Linux/glibc, the "unlocked mutex" initializer is itself all zeros, so the lock usually just works by luck. On macOS, a valid mutex must carry a non-zero signature, so <code>pthread_mutex_lock</code> returns <code>EINVAL</code> and libc++ throws <code>std::system_error: mutex lock failed: Invalid argument</code>. That's the exact message the project's harness printed at startup on macOS until commit 47e3a19 fixed the declaration order (<a href="05-part-transaction-and-manager.html#s7">Part 1, section 7</a>).</p>
       </div>
     </section>
 

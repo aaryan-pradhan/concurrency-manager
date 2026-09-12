@@ -60,8 +60,8 @@
       </table>
       </div>
       <div class="callout impl">
-        <span class="box-label">In the code · isolation only</span>
-        <p>The project stores no values, keeps no undo log and writes nothing that recovery could replay (the <code>.log</code> files are human-readable traces). "Abort" in the code releases locks and marks the transaction <code>ABORTED</code>. There are no writes to roll back. So the project implements the <strong>I</strong> of ACID, at the level of lock scheduling. The docs say so directly: "This project does not deal with durability at all — everything is in memory."</p>
+        <span class="box-label">In the code · isolation, with no durability</span>
+        <p>The engine stores no values, keeps no undo log and writes nothing that recovery could replay (the <code>.log</code> files are human-readable traces). "Abort" releases locks and marks the transaction <code>ABORTED</code>. The benchmark harness adds integer values and installs a transaction's writes only at commit, which makes each transaction's effects all-or-nothing in memory, but nothing survives a crash. So the project is about the <strong>I</strong> of ACID, at the level of lock scheduling. The <strong>A</strong> exists only in the benchmark harness, and there's no <strong>D</strong>. The docs say so directly: "This project does not deal with durability at all — everything is in memory."</p>
       </div>
     </section>
 

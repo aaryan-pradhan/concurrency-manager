@@ -67,7 +67,7 @@
       <p>A transaction that read \(x\) under \(S(x)\) and now wants to write it requests an <em class="term">upgrade</em> to \(X(x)\). The textbook implementation keeps the S lock granted while the upgrade waits, and converts it once the transaction is the only holder.</p>
       <div class="callout impl">
         <span class="box-label">Be careful · the S lock must stay held during the wait</span>
-        <p>If an implementation drops \(S(x)\) and joins the queue for \(X(x)\) as if it were a fresh request, another transaction can take \(X(x)\), write, and commit in the gap. The upgrader's earlier read is then stale, which is precisely schedule S₂ from page 1, section 7. Section 6 shows this also breaks the two-phase rule. <a href="06-part-lock-manager.html#s6">Part 2, section 6</a> finds this in the project.</p>
+        <p>If an implementation drops \(S(x)\) and joins the queue for \(X(x)\) as if it were a fresh request, another transaction can take \(X(x)\), write, and commit in the gap. The upgrader's earlier read is then stale, which is precisely schedule S₂ from page 1, section 7. Section 6 shows this also breaks the two-phase rule. <a href="06-part-lock-manager.html#s6">Part 2, section 6</a> shows the project had exactly this bug, with the log evidence and the fix.</p>
       </div>
       <div class="worked">
         <span class="box-label">Worked example · the upgrade deadlock</span>

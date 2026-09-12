@@ -12,7 +12,7 @@
   <header class="masthead">
     <div class="crumb"><span class="here">Explanations</span></div>
     <h1 class="title">Locks, Deadlocks and 1,000 Threads</h1>
-    <p class="dek">A from-scratch walkthrough of the C++ Two-Phase Locking concurrency manager: from what a schedule is, to the exact line where an upgrade gives up its lock. Read in order. Each page uses only ideas the pages before it have already built.</p>
+    <p class="dek">A from-scratch walkthrough of the C++ Two-Phase Locking concurrency manager: from what a schedule is, to the exact line where a late lock release can still hit a restarted transaction. Read in order. Each page uses only ideas the pages before it have already built.</p>
   </header>
   <main>
     <section>
@@ -23,7 +23,7 @@
       <p>There's no assignment brief in the repository, so each page is anchored to the project's own <code>docs/</code> pages and header comments, and every statement is checked against the <code>.cpp</code> code. Pages 1–4 build the theory that paragraph assumes. Parts 1–4 walk through the code in the order a lock request flows through it. Where the code, docs, README and measured behaviour disagree, the page says so.</p>
       <div class="callout impl">
         <span class="box-label">Before you start · how the numbers were obtained</span>
-        <p>The repository contains no benchmark output. Every run on these pages was made during an audit on macOS / Apple clang, using a scratch copy with one startup bug fixed (<a href="05-part-transaction-and-manager.html#s7">Part 1, section 7</a>). The repo itself wasn't modified. The <a href="09-results-and-takeaways.html#s1">results page</a> lists the full conditions.</p>
+        <p>These pages describe <code>main</code> at commit 47e3a19, which fixed most of the bugs an earlier audit found. Where code changed, a yellow "bug hit and fixed" box shows the old version. The numbers come from two recorded campaigns on the same Apple M3 machine. The pre-fix audit ran the text-schedule harness on a scratch copy with only the startup crash fixed (<a href="05-part-transaction-and-manager.html#s7">Part 1, section 7</a>). The post-fix benchmark ran on the fix branch before it was merged. Nothing was re-measured after the merge. The <a href="09-results-and-takeaways.html#s1">results page</a> lists the full conditions.</p>
       </div>
     </section>
 
@@ -32,11 +32,11 @@
       <li class="pre"><a href="02-threads-mutexes-condvars.html"><span class="num">Prerequisite 2</span><span class="name">Threads, mutexes and condition variables</span></a><div class="desc">Data races as undefined behaviour, latches vs locks, recursive mutexes, condition variables, the thundering herd, TOCTOU, barriers, and member-initialization order.</div></li>
       <li class="pre"><a href="03-locks-and-2pl.html"><span class="num">Prerequisite 3</span><span class="name">Locks and two-phase locking</span></a><div class="desc">S/X compatibility, lock tables and barging, correct upgrades, the lock-point proof that 2PL is serializable, and basic vs strict vs rigorous.</div></li>
       <li class="pre"><a href="04-deadlocks-and-wait-for-graphs.html"><span class="num">Prerequisite 4</span><span class="name">Deadlocks, wait-for graphs and recovery</span></a><div class="desc">Coffman conditions, wait-die and timeouts, RAG vs WFG, DFS cycle detection and tails, victim selection, detection delay, aging, backoff with jitter, and thrashing.</div></li>
-      <li><a href="05-part-transaction-and-manager.html"><span class="num">Part 1</span><span class="name">Transaction and ConcurrencyManager</span></a><div class="desc">The component map, the state machine, the unlatched static registry, restart under the same ID, which 2PL variant runs, and the startup crash.</div></li>
-      <li><a href="06-part-lock-manager.html"><span class="num">Part 2</span><span class="name">LockManager</span></a><div class="desc">Compatibility and barging, waiting and the "success reported as failure" bug, release pre-grants, and the upgrade gap with log-replay evidence of non-serializable commits.</div></li>
-      <li><a href="07-part-deadlock-detector.html"><span class="num">Part 3</span><span class="name">DeadlockDetector</span></a><div class="desc">The 100 ms thread, the 10,000-ID scan, DFS, a unit test showing victims chosen outside the cycle, and where aging really lives.</div></li>
-      <li><a href="08-part-harness-and-metrics.html"><span class="num">Part 4</span><span class="name">Harness, workloads and metrics</span></a><div class="desc">The two 1,000-transaction workloads, the restart/backoff formula with a worked table, exact metric definitions, and restart distributions.</div></li>
-      <li><a href="09-results-and-takeaways.html"><span class="num">Wrap-up</span><span class="name">All results, and what they support</span></a><div class="desc">Every run with its conditions, concurrent vs serial throughput, commit rate, isolation, fair comparisons, noise, conclusions, and a fix list.</div></li>
+      <li><a href="05-part-transaction-and-manager.html"><span class="num">Part 1</span><span class="name">Transaction and ConcurrencyManager</span></a><div class="desc">The component map, the CAS-based state machine, the latched shared_ptr registry, restart under the same ID, the commit point and which 2PL variant runs, the fixed startup crash, and what the engine doesn't provide.</div></li>
+      <li><a href="06-part-lock-manager.html"><span class="num">Part 2</span><span class="name">LockManager</span></a><div class="desc">Compatibility and barging, the three reasons a waiter wakes, releases that grant upgrades first, the upgrade gap with log-replay evidence and its fix, and the detector's snapshot.</div></li>
+      <li><a href="07-part-deadlock-detector.html"><span class="num">Part 3</span><span class="name">DeadlockDetector</span></a><div class="desc">Single-instant wait-for snapshots, DFS that extracts the cycle, victims chosen from the cycle, the late-release race still present at 1,000 threads, and what aging really does.</div></li>
+      <li><a href="08-part-harness-and-metrics.html"><span class="num">Part 4</span><span class="name">Harnesses, workloads and metrics</span></a><div class="desc">The text-schedule harness and the benchmark: workloads, restart and backoff formulas, exact metric definitions, the two per-run correctness checks, and how often each workload collides.</div></li>
+      <li><a href="09-results-and-takeaways.html"><span class="num">Wrap-up</span><span class="name">All results, and what they support</span></a><div class="desc">Every benchmark point with its conditions, speedup curves, isolation and commit-rate evidence, before vs after the fix, fair comparisons, noise, and what's left to fix.</div></li>
     </ol>
 
     <section>
@@ -45,7 +45,7 @@
         <div class="spec-quote"><span class="box-label">From the docs or headers</span><p>Verbatim from <code>docs/*.md</code>, <code>README.md</code> or a header comment.</p></div>
         <div class="callout impl"><span class="box-label">In the code / Be careful</span><p>What the implementation actually does where it differs from the docs or the textbook, or a phrasing that would be inaccurate.</p></div>
         <div class="callout fix"><span class="box-label">Bug hit and fixed</span><p>Changes visible in the git history, with the commit.</p></div>
-        <div class="callout result"><span class="box-label">Result</span><p>Numbers measured during the audit, with conditions.</p></div>
+        <div class="callout result"><span class="box-label">Result</span><p>Numbers from recorded runs, with conditions.</p></div>
         <div class="worked"><span class="box-label">Worked example</span><p>A rule or formula applied to small, concrete numbers.</p></div>
       </div>
     </section>
